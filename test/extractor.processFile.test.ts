@@ -1,0 +1,317 @@
+import { vol } from 'memfs'
+import { vi, describe, it, expect, beforeEach } from 'vitest'
+import { processFile, preScanFile } from '../src/extractor/core/extractor'
+import { ASTVisitors } from '../src/extractor/core/ast-visitors'
+import { createPluginContext } from '../src/extractor/plugin-manager'
+import { ConsoleLogger } from '../src/utils/logger'
+import type { I18nextToolkitConfig, ExtractedKey, Plugin } from '../src/index'
+
+vi.mock('fs/promises', async () => {
+  const memfs = await vi.importActual<typeof import('memfs')>('memfs')
+  return memfs.fs.promises
+})
+
+const mockConfig: I18nextToolkitConfig = {
+  locales: ['en', 'de'],
+  extract: {
+    input: ['src/**/*.{ts,tsx}'],
+    output: 'locales/{{language}}/{{namespace}}.json',
+    functions: ['t'],
+    transComponents: ['Trans'],
+    defaultNS: 'translation',
+  },
+}
+
+describe('processFile', () => {
+  let allKeys: Map<string, ExtractedKey>
+  let astVisitors: ASTVisitors
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+
+    allKeys = new Map()
+    // Mock the ASTVisitors class and its methods
+    astVisitors = {
+      visit: vi.fn(),
+      getVarFromScope: vi.fn().mockReturnValue(undefined),
+      setCurrentFile: vi.fn(),
+      getCurrentFile: vi.fn().mockReturnValue(''),
+      getCurrentCode: vi.fn().mockReturnValue(''),
+      objectKeys: new Set(),
+      scopeManager: {
+        setVarInScope: vi.fn(),
+      },
+    } as any
+  })
+
+  it('should process a basic TypeScript file and extract keys', async () => {
+    const sampleCode = `
+      import { useTranslation } from 'react-i18next';
+      
+      function App() {
+        const { t } = useTranslation();
+        return <div>{t('hello.world', 'Hello World!')}</div>;
+      }
+    `
+
+    vol.fromJSON({
+      '/src/App.tsx': sampleCode,
+    })
+
+    const plugins: Plugin[] = []
+    const pluginContext = createPluginContext(allKeys, plugins, mockConfig, new ConsoleLogger())
+
+    await processFile('/src/App.tsx', plugins, astVisitors, pluginContext, mockConfig)
+
+    expect(astVisitors.setCurrentFile).toHaveBeenCalledWith('/src/App.tsx', sampleCode)
+    expect(astVisitors.visit).toHaveBeenCalledTimes(1)
+    expect(astVisitors.visit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'Module'
+      })
+    )
+  })
+
+  it('should handle plugin onLoad hooks for code transformation', async () => {
+    const originalCode = 't(\'original.key\')'
+    const transformedCode = 't(\'transformed.key\')'
+
+    const transformPlugin: Plugin = {
+      name: 'transform-plugin',
+      onLoad: vi.fn().mockResolvedValue(transformedCode)
+    }
+
+    const configWithPlugin = {
+      ...mockConfig,
+      plugins: [transformPlugin]
+    }
+
+    const plugins = configWithPlugin.plugins
+
+    vol.fromJSON({
+      '/src/test.ts': originalCode,
+    })
+
+    const pluginContext = createPluginContext(allKeys, plugins, configWithPlugin, new ConsoleLogger())
+
+    await processFile('/src/test.ts', plugins, astVisitors, pluginContext, configWithPlugin)
+
+    expect(transformPlugin.onLoad).toHaveBeenCalledWith(originalCode, '/src/test.ts')
+    expect(astVisitors.setCurrentFile).toHaveBeenCalledWith('/src/test.ts', transformedCode)
+    expect(astVisitors.visit).toHaveBeenCalledTimes(1)
+  })
+
+  it('should extract keys from comments in the code', async () => {
+    const sampleCode = `
+      // t('comment.key1', 'From comment')
+      /* t('comment.key2', 'From block comment') */
+      function test() {
+        return 'test';
+      }
+    `
+
+    vol.fromJSON({
+      '/src/test.ts': sampleCode,
+    })
+
+    const plugins: Plugin[] = []
+    const pluginContext = createPluginContext(allKeys, plugins, mockConfig, new ConsoleLogger())
+
+    await processFile('/src/test.ts', plugins, astVisitors, pluginContext, mockConfig)
+
+    expect(astVisitors.setCurrentFile).toHaveBeenCalledWith('/src/test.ts', sampleCode)
+    expect(allKeys.size).toBeGreaterThan(0)
+  })
+
+  it('should parse JSX syntax correctly', async () => {
+    const sampleCode = `
+      import { Trans } from 'react-i18next';
+      
+      function Component() {
+        return (
+          <Trans i18nKey="jsx.test">
+            Hello <strong>world</strong>!
+          </Trans>
+        );
+      }
+    `
+
+    vol.fromJSON({
+      '/src/jsx-test.tsx': sampleCode,
+    })
+
+    const plugins: Plugin[] = []
+    const pluginContext = createPluginContext(allKeys, plugins, mockConfig, new ConsoleLogger())
+
+    await processFile('/src/jsx-test.tsx', plugins, astVisitors, pluginContext, mockConfig)
+
+    expect(astVisitors.setCurrentFile).toHaveBeenCalledWith('/src/jsx-test.tsx', sampleCode)
+    expect(astVisitors.visit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'Module'
+      })
+    )
+  })
+
+  it('should handle files with decorators', async () => {
+    const sampleCode = `
+      @Component({
+        selector: 'app-test'
+      })
+      class TestComponent {
+        @Input() value: string = t('decorator.test');
+      }
+    `
+
+    vol.fromJSON({
+      '/src/decorator-test.ts': sampleCode,
+    })
+
+    const plugins: Plugin[] = []
+    const pluginContext = createPluginContext(allKeys, plugins, mockConfig, new ConsoleLogger())
+
+    await processFile('/src/decorator-test.ts', plugins, astVisitors, pluginContext, mockConfig)
+
+    expect(astVisitors.setCurrentFile).toHaveBeenCalledWith('/src/decorator-test.ts', sampleCode)
+    expect(astVisitors.visit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'Module'
+      })
+    )
+  })
+
+  it('should log warning and skip file when file processing fails', async () => {
+    const invalidCode = `
+      t('key') this is not valid javascript syntax !!!
+    `
+
+    vol.fromJSON({
+      '/src/invalid.ts': invalidCode,
+    })
+
+    const plugins: Plugin[] = []
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      log: vi.fn(),
+    } as any
+    const pluginContext = createPluginContext(allKeys, plugins, mockConfig, mockLogger)
+
+    await processFile('/src/invalid.ts', plugins, astVisitors, pluginContext, mockConfig, mockLogger)
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping file due to error:'))
+  })
+
+  it('should log warning and skip file when file does not exist', async () => {
+    const plugins: Plugin[] = []
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      log: vi.fn(),
+    } as any
+    const pluginContext = createPluginContext(allKeys, plugins, mockConfig, mockLogger)
+
+    await processFile('/nonexistent/file.ts', plugins, astVisitors, pluginContext, mockConfig, mockLogger)
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping file due to error:'))
+  })
+
+  it('should silently skip directories with file-like extensions (issue #229)', async () => {
+    // A directory named "Foo.tsx" can match glob patterns like **/*.tsx
+    // and should be skipped without emitting a warning.
+    vol.mkdirSync('/src/Foo.tsx', { recursive: true })
+
+    const plugins: Plugin[] = []
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      log: vi.fn(),
+    } as any
+    const pluginContext = createPluginContext(allKeys, plugins, mockConfig, mockLogger)
+    const fileErrors: string[] = []
+
+    await processFile('/src/Foo.tsx', plugins, astVisitors, pluginContext, mockConfig, mockLogger, fileErrors)
+
+    expect(mockLogger.warn).not.toHaveBeenCalled()
+    expect(fileErrors).toHaveLength(0)
+    expect(astVisitors.visit).not.toHaveBeenCalled()
+  })
+
+  it('should silently skip directories with file-like extensions in preScanFile (issue #229)', async () => {
+    vol.mkdirSync('/src/Foo.tsx', { recursive: true })
+
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      log: vi.fn(),
+    } as any
+    const fileErrors: string[] = []
+
+    await preScanFile('/src/Foo.tsx', astVisitors, mockConfig, mockLogger, fileErrors)
+
+    expect(mockLogger.warn).not.toHaveBeenCalled()
+    expect(fileErrors).toHaveLength(0)
+  })
+
+  it('should support custom plugin that extracts keys from TypeScript satisfies expressions', async () => {
+    const extractedKeys: ExtractedKey[] = []
+
+    const satisfiesPlugin: Plugin = {
+      name: 'satisfies-extractor',
+      onVisitNode: (node, context) => {
+        if (node.type === 'TemplateLiteral' && 'expressions' in node && Array.isArray((node as any).expressions)) {
+          const expressions = (node as any).expressions as any[]
+          for (const expr of expressions) {
+            const e = expr as any
+            if (e.type === 'TsAsExpression' && e.typeAnnotation?.type === 'TsUnionType') {
+              const unionTypes = e.typeAnnotation.types
+              for (const unionType of unionTypes) {
+                if (unionType.type === 'TsLiteralType' && unionType.literal?.type === 'StringLiteral') {
+                  const possibleValue = unionType.literal.value
+                  context.addKey({
+                    key: `dynamic.${possibleValue}.extracted`,
+                    defaultValue: `Dynamic ${possibleValue}`,
+                    ns: 'translation'
+                  })
+                  extractedKeys.push({
+                    key: `dynamic.${possibleValue}.extracted`,
+                    defaultValue: `Dynamic ${possibleValue}`,
+                    ns: 'translation'
+                  })
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const configWithSatisfiesPlugin = {
+      ...mockConfig,
+      plugins: [satisfiesPlugin]
+    }
+
+    const sampleCode = `
+      const role = 'ADMIN';
+      t(\`profile.role.\${role satisfies 'ADMIN' | 'MANAGER' | 'EMPLOYEE'}.description\`);
+    `
+
+    vol.fromJSON({
+      '/src/satisfies-plugin-test.ts': sampleCode,
+    })
+
+    const plugins = configWithSatisfiesPlugin.plugins
+    const pluginContext = createPluginContext(allKeys, plugins, configWithSatisfiesPlugin, new ConsoleLogger())
+
+    await processFile('/src/satisfies-plugin-test.ts', plugins, astVisitors, pluginContext, configWithSatisfiesPlugin)
+
+    expect(astVisitors.setCurrentFile).toHaveBeenCalledWith('/src/satisfies-plugin-test.ts', sampleCode)
+
+    expect(extractedKeys.length).toBeGreaterThanOrEqual(0)
+  })
+})

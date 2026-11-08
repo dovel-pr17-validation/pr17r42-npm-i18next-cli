@@ -1,0 +1,21 @@
+node_modules
+.DS_Store
+npm-debug.log
+package-lock.json
+types
+#scripts
+dist
+# !dist/
+# dist/*
+# !dist/deno/
+
+.env.*
+.node-version
+.nvmrc
+
+coverage
+tryme.js
+
+# Secrets & credentials
+*.pem
+*.key

@@ -1,0 +1,7 @@
+export * from './core/extractor.js'
+export * from './core/key-finder.js'
+export * from './core/translation-manager.js'
+export * from './core/ast-visitors.js'
+export * from './parsers/comment-parser.js'
+export * from './parsers/jsx-parser.js'
+export * from './plugin-manager.js'

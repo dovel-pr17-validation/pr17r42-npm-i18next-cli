@@ -1,0 +1,1115 @@
+import type { CallExpression, ArrowFunctionExpression, Expression, ObjectExpression } from '@swc/core'
+import type { PluginContext, I18nextToolkitConfig, Logger, ExtractedKey, ScopeInfo } from '../../types.js'
+import { ExpressionResolver } from './expression-resolver.js'
+import { safePluralRules } from '../../utils/plural-rules.js'
+import { parseNestedReferences } from '../../utils/nesting.js'
+import { usesMessageFormat } from '../../utils/message-format.js'
+import { getObjectPropValueExpression, getObjectPropValue, isSimpleTemplateLiteral, lineColumnFromOffset, unwrapParens, usesIntervalPostProcessor } from './ast-utils.js'
+import { matchesFunctionPattern } from '../utils/function-matcher.js'
+
+// Helper to escape regex characters
+const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Checks if a string looks like natural language (contains spaces, punctuation, etc.)
+// Used to prevent splitting keys like "Error message: not found" into namespace + key.
+const naturalLanguageChars = /[ ,?!;]/
+const looksLikeNaturalLanguage = (s: string) => naturalLanguageChars.test(s)
+
+/**
+ * Mirror i18next's runtime selector rule (v25.8.19 default, or
+ * `enableSelector: 'strict'` when `types.enableSelector === 'strict'`).
+ *
+ * **Default mode** — rewrite only when the hook was called with a multi-element
+ * namespace array and the path's first segment matches a *secondary* namespace.
+ * The primary is intentionally not rewritten (preserves #2405): its keys are
+ * exposed flat on `$`, so `$.primary.foo` means a literal sub-key.
+ *
+ * **Strict mode** — every namespace (primary included) is exposed only under
+ * its own key on `$`. So a leading segment matching *any* namespace in the
+ * scope's list — primary or secondary, single-ns or multi-ns — is rewritten.
+ * Mirrors `i18next/src/selector.js` strict branch.
+ *
+ * In strict mode we also accept a single-ns scope, falling back to
+ * `[scopeInfo.defaultNs]` when the scope didn't capture an explicit array
+ * (e.g. `useTranslation('only')`).
+ *
+ * Falls through to the input string when:
+ * - the call had no selector (string keys go through this path unchanged),
+ * - scope has no namespaces info,
+ * - first segment isn't in the scope's namespaces list, or
+ * - separators are configured off.
+ */
+export function applySelectorNsRewrite (key: string, scopeInfo: ScopeInfo | undefined, config: Pick<I18nextToolkitConfig, 'extract' | 'types'>): string {
+  const strict = config.types?.enableSelector === 'strict'
+
+  // Resolve the effective namespace list for the rule:
+  // - default mode: only the explicitly-captured `namespaces` array, length ≥ 2
+  // - strict mode: same array if present; otherwise synthesize from `defaultNs`
+  const nsCaptured = scopeInfo?.namespaces
+  const nsList = strict
+    ? (nsCaptured ?? (scopeInfo?.defaultNs ? [scopeInfo.defaultNs] : undefined))
+    : nsCaptured
+  if (!nsList || nsList.length < (strict ? 1 : 2)) return key
+
+  const keySeparator = config.extract.keySeparator
+  const joiner = typeof keySeparator === 'string' ? keySeparator : '.'
+  const nsSeparator = config.extract.nsSeparator ?? ':'
+  if (keySeparator === false || !nsSeparator) return key
+
+  const firstSepAt = key.indexOf(joiner)
+  if (firstSepAt < 0) return key
+  const head = key.slice(0, firstSepAt)
+  // Default mode excludes the primary; strict mode includes it.
+  if (!strict && head === nsList[0]) return key
+  if (!nsList.includes(head)) return key
+
+  return `${head}${nsSeparator}${key.slice(firstSepAt + joiner.length)}`
+}
+
+export class CallExpressionHandler {
+  private pluginContext: PluginContext
+  private config: Omit<I18nextToolkitConfig, 'plugins'>
+  private logger: Logger
+  private expressionResolver: ExpressionResolver
+  public objectKeys = new Set<string>()
+  private getCurrentFile: () => string
+  private getCurrentCode: () => string
+  private resolveIdentifier: (name: string) => string | undefined
+
+  constructor (
+    config: Omit<I18nextToolkitConfig, 'plugins'>,
+    pluginContext: PluginContext,
+    logger: Logger,
+    expressionResolver: ExpressionResolver,
+    getCurrentFile: () => string,
+    getCurrentCode: () => string,
+    resolveIdentifier: (name: string) => string | undefined = () => undefined
+  ) {
+    this.config = config
+    this.pluginContext = pluginContext
+    this.logger = logger
+    this.expressionResolver = expressionResolver
+    this.getCurrentFile = getCurrentFile
+    this.getCurrentCode = getCurrentCode
+    this.resolveIdentifier = resolveIdentifier
+  }
+
+  /**
+   * Statically resolves a non-literal default value such as `STRINGS.key`, `DEFAULT_TEXT`
+   * or `` `Hi ${NAME}` `` (#293). Ambiguous expressions (ternaries, unions) yield undefined.
+   */
+  private resolveDefaultValue = (expr: Expression): string | undefined => {
+    const values = this.expressionResolver.resolvePossibleKeyStringValues(expr)
+    return values.length === 1 ? values[0] : undefined
+  }
+
+  /** `getObjectPropValue` for `defaultValue*` props, so `{ defaultValue: STRINGS.key }` resolves too. */
+  private getDefaultValueProp (options: ObjectExpression, propName: string) {
+    return getObjectPropValue(options, propName, undefined, this.resolveDefaultValue)
+  }
+
+  /**
+   * Computes line and column from a node's normalised span.
+   * For call / new expressions the location points to the first argument
+   * (the translation key) rather than the callee, matching the previous
+   * string-search behaviour.
+   */
+  private getLocationFromNode (node: any): { line: number, column: number } | undefined {
+    if (!node?.span || typeof node.span.start !== 'number') return undefined
+
+    // For call / new expressions, prefer the first argument's span
+    if (
+      (node.type === 'CallExpression' || node.type === 'NewExpression') &&
+      node.arguments?.length > 0
+    ) {
+      const firstArg = unwrapParens(node.arguments[0].expression)
+      if (firstArg?.span && typeof firstArg.span.start === 'number') {
+        return lineColumnFromOffset(this.getCurrentCode(), firstArg.span.start)
+      }
+    }
+
+    return lineColumnFromOffset(this.getCurrentCode(), node.span.start)
+  }
+
+  /**
+   * Processes function call expressions and new expressions to extract translation keys.
+   *
+   * This is the core extraction method that handles:
+   * - Standard t() calls with string literals
+   * - NewExpression calls like new TranslatedError(...)
+   * - Selector API calls with arrow functions: `t($ => $.path.to.key)`
+   * - Namespace resolution from multiple sources
+   * - Default value extraction from various argument patterns
+   * - Pluralization and context handling
+   * - Key prefix application from scope
+   *
+   * @param node - Call expression or new expression node to process
+   * @param getScopeInfo - Function to retrieve scope information for variables
+   */
+  handleCallExpression (node: CallExpression, getScopeInfo: (name: string) => ScopeInfo | undefined): void {
+    const functionName = this.getFunctionName(node.callee)
+    if (!functionName) return
+
+    // The scope lookup will only work for simple identifiers, which is okay for this fix.
+    let scopeInfo = getScopeInfo(functionName)
+
+    const configuredFunctions = this.config.extract.functions || ['t', '*.t']
+    let isFunctionToParse = scopeInfo !== undefined // A scoped variable (from useTranslation, etc.) is always parsed.
+    if (!isFunctionToParse) {
+      for (const pattern of configuredFunctions) {
+        // Supports exact ('t', 'i18next.t'), prefix wildcards ('*.t' -> 'i18n.t')
+        // and suffix wildcards ('tProps.*' -> 'tProps.label').
+        if (matchesFunctionPattern(functionName, pattern)) {
+          isFunctionToParse = true
+          break
+        }
+      }
+    }
+    if (!isFunctionToParse || node.arguments.length === 0) return
+
+    // For member expressions like `emailError.t`, also try the object part(s) as a
+    // fallback. This lets custom hooks that return an object with a `t` method
+    // (e.g. `const emailError = useTranslateKeyState('auth')`) propagate their
+    // namespace/keyPrefix to the inner `t` call. This runs AFTER the pattern
+    // check so an in-scope prefix cannot by itself promote an arbitrary method
+    // call (e.g. `i18n.language.substring(...)`) into a translation call.
+    if (!scopeInfo && functionName.includes('.')) {
+      const parts = functionName.split('.')
+      for (let i = parts.length - 1; i > 0; i--) {
+        const candidate = parts.slice(0, i).join('.')
+        const candidateScope = getScopeInfo(candidate)
+        if (candidateScope) {
+          scopeInfo = candidateScope
+          break
+        }
+      }
+    }
+
+    // `useTranslation(cond ? 'a' : 'b')`: the key is used in every branch's namespace (#299).
+    for (const ns of scopeInfo?.altNs ?? []) {
+      this.extractFromCall(node, { ...scopeInfo, defaultNs: ns, namespaces: undefined, altNs: undefined })
+    }
+    this.extractFromCall(node, scopeInfo)
+  }
+
+  private extractFromCall (node: CallExpression, scopeInfo: ScopeInfo | undefined): void {
+    const { keysToProcess, originalKeysToProcess, isSelectorAPI } = this.handleCallExpressionArgument(node, 0, scopeInfo)
+
+    if (keysToProcess.length === 0) return
+
+    let isOrdinalByKey = false
+    const pluralSeparator = this.config.extract.pluralSeparator ?? '_'
+
+    for (let i = 0; i < keysToProcess.length; i++) {
+      if (keysToProcess[i].endsWith(`${pluralSeparator}ordinal`)) {
+        isOrdinalByKey = true
+        // Normalize the key by stripping the suffix
+        keysToProcess[i] = keysToProcess[i].slice(0, -8)
+      }
+    }
+
+    let defaultValue: string | undefined
+    let options: ObjectExpression | undefined
+
+    // Options inline or in a variable: `t('key', { count })`, `t('key', params)` (#307)
+    if (node.arguments.length > 1) {
+      const arg2 = unwrapParens(node.arguments[1].expression)
+      options = this.expressionResolver.objectLiteralOf(arg2)
+      if (options) {
+        // no default value
+      } else if (arg2.type === 'StringLiteral') {
+        defaultValue = arg2.value
+      } else if (arg2.type === 'TemplateLiteral' && isSimpleTemplateLiteral(arg2)) {
+        defaultValue = arg2.quasis[0].cooked
+      } else {
+        defaultValue = this.resolveDefaultValue(arg2)
+      }
+    }
+    if (node.arguments.length > 2) {
+      options = this.expressionResolver.objectLiteralOf(node.arguments[2].expression) ?? options
+    }
+    const defaultValueFromOptions = options ? this.getDefaultValueProp(options, 'defaultValue') : undefined
+    const finalDefaultValue = (typeof defaultValueFromOptions === 'string' ? defaultValueFromOptions : defaultValue)
+
+    // Helper: detect if options object contains any defaultValue* properties
+    const optionsHasDefaultProps = (opts?: ObjectExpression) => {
+      if (!opts || !Array.isArray(opts.properties)) return false
+      for (const p of opts.properties as any[]) {
+        if (p && p.type === 'KeyValueProperty' && p.key) {
+          const keyName = (p.key.type === 'Identifier' && p.key.value) || (p.key.type === 'StringLiteral' && p.key.value)
+          if (typeof keyName === 'string' && keyName.startsWith('defaultValue')) return true
+        }
+      }
+      return false
+    }
+
+    // explicit for base key when a string default was provided OR explicit plural defaults are present
+    const explicitDefaultForBase = typeof finalDefaultValue === 'string' || optionsHasDefaultProps(options)
+    // detect if options contain plural-specific defaultValue_* props
+    const explicitPluralDefaultsInOptions = optionsHasDefaultProps(options)
+    // If a base default string exists, consider it explicit for plural VARIANTS only when
+    // it does NOT contain a count interpolation like '{{count}}' — templates with count
+    // are often the runtime interpolation form and should NOT overwrite existing variant forms.
+    const containsCountPlaceholder = (s?: string) => {
+      if (typeof s !== 'string') return false
+      const ip = this.config.extract.interpolationPrefix ?? '{{'
+      const is = this.config.extract.interpolationSuffix ?? '}}'
+      const re = new RegExp(`${escapeRegex(ip)}\\s*count\\s*${escapeRegex(is)}`)
+      return re.test(s)
+    }
+    const explicitPluralForVariants = Boolean(explicitPluralDefaultsInOptions || (typeof finalDefaultValue === 'string' && !containsCountPlaceholder(finalDefaultValue)))
+
+    // Loop through each key found (could be one or more) and process it
+    for (let i = 0; i < keysToProcess.length; i++) {
+      // For the dv heuristic we want the user-typed shape, not the post-rewrite
+      // form: a synthetic `validation:email` (rewritten from a `$.validation.email`
+      // selector) shouldn't leak into the default value. originalKeysToProcess
+      // is the pre-rewrite path; for non-selector calls it's the same as keysToProcess.
+      const originalKey = originalKeysToProcess[i]
+      let key = keysToProcess[i]
+      let ns: string | false | undefined
+
+      // Determine namespace (explicit ns > ns:key > scope ns > default)
+      // See https://www.i18next.com/overview/api#getfixedt
+      if (options) {
+        const nsVal = getObjectPropValue(options, 'ns', this.resolveIdentifier)
+        if (typeof nsVal === 'string' && nsVal !== '') ns = nsVal
+      }
+
+      const nsSeparator = this.config.extract.nsSeparator ?? ':'
+      if (!ns && nsSeparator && key.includes(nsSeparator)) {
+        const parts = key.split(nsSeparator)
+        const candidateNs = parts[0]
+
+        // If the candidate namespace looks like natural language (contains spaces,
+        // punctuation), assume the separator is part of the key text, not a namespace delimiter.
+        if (!looksLikeNaturalLanguage(candidateNs)) {
+          ns = parts.shift()
+          key = parts.join(nsSeparator)
+
+          if (!key || key.trim() === '') {
+            this.logger.warn(`Skipping key that became empty after namespace removal: '${ns}${nsSeparator}'`)
+            continue
+          }
+        }
+      }
+
+      if (!ns && scopeInfo?.defaultNs) ns = scopeInfo.defaultNs
+      if (!ns) ns = this.config.extract.defaultNS
+
+      let finalKey = key
+
+      let keyPrefix: string | undefined
+      // Check for keyPrefix in call options before falling back to scope
+      if (options) {
+        const kpVal = getObjectPropValue(options, 'keyPrefix')
+        if (typeof kpVal === 'string') keyPrefix = kpVal
+      }
+      // Fall back to scope keyPrefix if not overridden in options
+      keyPrefix ||= scopeInfo?.keyPrefix
+
+      // Apply keyPrefix AFTER namespace extraction
+      if (keyPrefix) {
+        const keySeparator = this.config.extract.keySeparator ?? '.'
+
+        // Apply keyPrefix - handle case where keyPrefix already ends with separator
+        if (keySeparator !== false) {
+          if (keyPrefix.endsWith(keySeparator)) {
+            finalKey = `${keyPrefix}${key}`
+          } else {
+            finalKey = `${keyPrefix}${keySeparator}${key}`
+          }
+        } else {
+          finalKey = `${keyPrefix}${key}`
+        }
+
+        // Validate keyPrefix combinations that create problematic keys
+        if (keySeparator !== false) {
+          // Check for patterns that would create empty segments in the nested key structure
+          const segments = finalKey.split(keySeparator)
+          const hasEmptySegment = segments.some(segment => segment.trim() === '')
+
+          if (hasEmptySegment) {
+            this.logger.warn(`Skipping key with empty segments: '${finalKey}' (keyPrefix: '${keyPrefix}', key: '${key}')`)
+            continue
+          }
+        }
+      }
+
+      const isLastKey = i === keysToProcess.length - 1
+      // Use the original (possibly namespaced) key as the default when no explicit
+      // default was provided and the source key contained a namespace prefix.
+      const dv = isLastKey
+        ? (typeof finalDefaultValue === 'string'
+            ? finalDefaultValue
+            : (nsSeparator && originalKey.includes(nsSeparator || ':') ? originalKey : key))
+        : key
+
+      // Handle plurals, context, and returnObjects
+      // Compute location once here so it is available to ALL paths below
+      // (plural, context, single-other fast paths, and the default leaf path).
+      const location = this.getLocationFromNode(node)
+      const locationEntry = location
+        ? [{ file: this.getCurrentFile(), line: location.line, column: location.column }]
+        : undefined
+      // ICU and MF2 keep plurals and selects inside one message: no context or plural keys
+      const plainMessage = usesMessageFormat(this.config)
+      if (options) {
+        const contextPropValue = plainMessage ? undefined : getObjectPropValueExpression(options, 'context')
+
+        const keysWithContext: ExtractedKey[] = []
+
+        // 1. Handle Context
+        if (contextPropValue?.type === 'StringLiteral' || contextPropValue?.type === 'NumericLiteral' || contextPropValue?.type === 'BooleanLiteral') {
+          // If the context is static, we don't need to add the base key
+          const contextValue = `${contextPropValue.value}`
+
+          const contextSeparator = this.config.extract.contextSeparator ?? '_'
+          // Ignore context: ''
+          if (contextValue !== '') {
+            keysWithContext.push({ key: `${finalKey}${contextSeparator}${contextValue}`, ns, defaultValue: dv, explicitDefault: explicitDefaultForBase })
+          }
+        } else if (contextPropValue) {
+          const contextValues = this.expressionResolver.resolvePossibleContextStringValues(contextPropValue)
+          const contextSeparator = this.config.extract.contextSeparator ?? '_'
+
+          if (contextValues.length > 0) {
+            contextValues.forEach(context => {
+              keysWithContext.push({ key: `${finalKey}${contextSeparator}${context}`, ns, defaultValue: dv, explicitDefault: explicitDefaultForBase })
+            })
+          }
+          // For dynamic context, also add the base key as a fallback
+          keysWithContext.push({
+            key: finalKey,
+            ns,
+            defaultValue: dv,
+            explicitDefault: explicitDefaultForBase,
+            keyAcceptingContext: finalKey
+          })
+        }
+
+        // 2. Handle Plurals
+        // Robust detection for `{ count }`, `{ count: x }`, `{ 'count': x }` etc.
+        // Support KeyValueProperty and common shorthand forms that SWC may emit.
+        const propNameFromNode = (p: any): string | undefined => {
+          if (!p) return undefined
+          // Standard key:value property
+          if (p.type === 'KeyValueProperty' && p.key) {
+            if (p.key.type === 'Identifier') return p.key.value
+            if (p.key.type === 'StringLiteral') return p.key.value
+          }
+          // SWC may represent shorthand properties differently (no explicit key node).
+          // Try common shapes: property with `value` being an Identifier (shorthand).
+          if (p.type === 'KeyValueProperty' && p.value && p.value.type === 'Identifier') {
+            // e.g. { count: count } - already covered above, but keep safe fallback
+            return p.key && p.key.type === 'Identifier' ? p.key.value : undefined
+          }
+          // Some AST variants use 'ShorthandProperty' or keep the Identifier directly.
+          if ((p.type === 'ShorthandProperty' || p.type === 'Identifier') && (p as any).value) {
+            return (p as any).value
+          }
+          // Fallback: if node has an 'id' or 'key' string value
+          if (p.key && typeof p.key === 'string') return p.key
+          return undefined
+        }
+
+        const hasCount = (() => {
+          if (usesIntervalPostProcessor(options) || !options || !Array.isArray(options.properties)) return false
+          for (const p of options.properties as any[]) {
+            const name = propNameFromNode(p)
+            if (name === 'count') return true
+          }
+          return false
+        })()
+
+        const isOrdinalByOption = (() => {
+          if (!options || !Array.isArray(options.properties)) return false
+          for (const p of options.properties as any[]) {
+            const name = propNameFromNode(p)
+            if (name === 'ordinal') {
+              // If it's a key:value pair with a BooleanLiteral true, respect it.
+              if (p.type === 'KeyValueProperty' && p.value && p.value.type === 'BooleanLiteral') {
+                return Boolean(p.value.value)
+              }
+              // shorthand `ordinal` without explicit true -> treat as false
+              return false
+            }
+          }
+          return false
+        })()
+        if (!plainMessage && (hasCount || isOrdinalByKey)) {
+          // Check if plurals are disabled FIRST, before any plural optimization paths
+          if (this.config.extract.disablePlurals) {
+            // When plurals are disabled, treat count as a regular option (for interpolation only)
+            // Still handle context normally. We keep `hasCount`/`isOrdinal` on the
+            // emitted key so `status` knows it is count-driven and can accept the
+            // file's plural variants (or the bare key) instead of demanding the
+            // literal base key. File generation ignores these flags under
+            // disablePlurals (see translation-manager), so output is unchanged.
+            const countMeta = hasCount ? { hasCount: true, isOrdinal: isOrdinalByKey } : {}
+            if (keysWithContext.length > 0) {
+              keysWithContext.forEach(k => this.pluginContext.addKey({ ...k, ...countMeta }))
+            } else {
+              this.pluginContext.addKey({ key: finalKey, ns, defaultValue: dv, explicitDefault: explicitDefaultForBase, ...countMeta })
+            }
+
+            continue // This key is fully handled
+          }
+
+          // QUICK PATH: If ALL target locales only have the "other" category,
+          // emit base/context keys directly (avoid generating *_other). This
+          // mirrors the special-case in handlePluralKeys but is placed here as a
+          // defensive guard to ensure keys are always emitted.
+          try {
+            const typeForCheck = isOrdinalByKey ? 'ordinal' : 'cardinal'
+            // Prefer the configured primaryLanguage as the deciding signal for
+            // "single-other" languages (ja/zh/ko). Fall back to union of locales.
+            const primaryLang = this.config.extract?.primaryLanguage || (Array.isArray(this.config.locales) ? this.config.locales[0] : undefined) || 'en'
+            let isSingleOther = false
+            try {
+              const primaryCategories = safePluralRules(primaryLang, { type: typeForCheck }).resolvedOptions().pluralCategories
+              if (primaryCategories.length === 1 && primaryCategories[0] === 'other') {
+                isSingleOther = true
+              }
+            } catch {
+              // ignore and fall back to union-of-locales check below
+            }
+
+            if (!isSingleOther) {
+              const allPluralCategoriesCheck = new Set<string>()
+              for (const locale of this.config.locales) {
+                try {
+                  const rules = safePluralRules(locale, { type: typeForCheck })
+                  rules.resolvedOptions().pluralCategories.forEach(c => allPluralCategoriesCheck.add(c))
+                } catch {
+                  safePluralRules('en', { type: typeForCheck }).resolvedOptions().pluralCategories.forEach(c => allPluralCategoriesCheck.add(c))
+                }
+              }
+              const pluralCategoriesCheck = Array.from(allPluralCategoriesCheck).sort()
+              if (pluralCategoriesCheck.length === 1 && pluralCategoriesCheck[0] === 'other') {
+                isSingleOther = true
+              }
+            }
+
+            if (isSingleOther) {
+              // Emit only base/context keys (no _other) and skip the heavy plural path.
+              if (keysWithContext.length > 0) {
+                for (const k of keysWithContext) {
+                  this.pluginContext.addKey({
+                    key: k.key,
+                    ns: k.ns,
+                    defaultValue: k.defaultValue,
+                    hasCount: true,
+                    isOrdinal: isOrdinalByKey,
+                    locations: locationEntry
+                  })
+                }
+              } else {
+                this.pluginContext.addKey({
+                  key: finalKey,
+                  ns,
+                  defaultValue: dv,
+                  hasCount: true,
+                  isOrdinal: isOrdinalByKey,
+                  locations: locationEntry
+                })
+              }
+              continue
+            }
+          } catch (e) {
+            // Ignore Intl failures here and fall through to normal logic
+          }
+
+          // Original plural handling logic when plurals are enabled
+          // Always pass the base key to handlePluralKeys - it will handle context internally.
+          // Pass explicitDefaultForBase so that when a call-site provided an explicit
+          // base default (e.g. t('key', 'Default', { count })), plural variant keys
+          // are treated as explicit and may be synced to that default.
+          this.handlePluralKeys(finalKey, ns, options, isOrdinalByOption || isOrdinalByKey, finalDefaultValue, explicitPluralForVariants, locationEntry)
+
+          continue // This key is fully handled
+        }
+
+        if (keysWithContext.length > 0) {
+          keysWithContext.forEach(this.pluginContext.addKey)
+
+          continue // This key is now fully handled
+        }
+
+        // 3. Handle returnObjects
+        if (getObjectPropValue(options, 'returnObjects') === true) {
+          this.objectKeys.add(finalKey)
+          // Fall through to add the base key itself
+        }
+      }
+
+      // 4. Handle selector API as implicit returnObjects
+      if (isSelectorAPI) {
+        this.objectKeys.add(finalKey)
+        // Fall through to add the base key itself
+      }
+
+      // 5. Default case: Add the simple key
+      // eslint-disable-next-line no-lone-blocks
+      {
+        this.pluginContext.addKey({
+          key: finalKey,
+          ns,
+          defaultValue: dv,
+          explicitDefault: explicitDefaultForBase,
+          locations: locationEntry
+        })
+
+        // Check for nested translations in the key itself
+        this.extractNestedKeys(finalKey, ns)
+      }
+
+      // Check for nested translations in the default value
+      if (typeof finalDefaultValue === 'string') {
+        this.extractNestedKeys(finalDefaultValue, ns)
+      }
+    }
+  }
+
+  /**
+   * Scans a string for nested translations like $t(key, options) and registers
+   * the referenced keys (plus their plural / context variants) on the current
+   * plugin context.
+   */
+  private extractNestedKeys (text: string, _ns: string | false | undefined): void {
+    // ICU and MF2 output $t() as text
+    if (usesMessageFormat(this.config)) return
+    const references = parseNestedReferences(text, {
+      nestingPrefix: this.config.extract.nestingPrefix,
+      nestingSuffix: this.config.extract.nestingSuffix,
+      nestingOptionsSeparator: this.config.extract.nestingOptionsSeparator,
+      nsSeparator: this.config.extract.nsSeparator,
+      defaultNS: this.config.extract.defaultNS
+    })
+
+    for (const { key, ns: nestedNs, hasCount, context } of references) {
+      const effectiveHasCount = hasCount && !this.config.extract.disablePlurals
+      if (effectiveHasCount || context !== undefined) {
+        this.generateNestedPluralKeys(key, nestedNs, effectiveHasCount, context)
+      } else {
+        this.pluginContext.addKey({ key, ns: nestedNs })
+      }
+    }
+  }
+
+  private generateNestedPluralKeys (key: string, ns: string | false | undefined, hasCount: boolean, context: string | undefined) {
+    try {
+      const type = 'cardinal'
+
+      // If only context, no plural
+      if (!hasCount && context !== undefined) {
+        this.pluginContext.addKey({ key, ns })
+        this.pluginContext.addKey({ key: `${key}_${context}`, ns })
+        return
+      }
+
+      // If hasCount, generate plurals
+      const allPluralCategories = new Set<string>()
+      const locales = this.config.locales || ['en']
+      for (const locale of locales) {
+        try {
+          const pluralRules = safePluralRules(locale, { type })
+          const categories = pluralRules.resolvedOptions().pluralCategories
+          categories.forEach(cat => allPluralCategories.add(cat))
+        } catch (e) {
+          const englishRules = safePluralRules('en', { type })
+          const categories = englishRules.resolvedOptions().pluralCategories
+          categories.forEach(cat => allPluralCategories.add(cat))
+        }
+      }
+
+      const pluralCategories = Array.from(allPluralCategories).sort()
+      const pluralSeparator = this.config.extract.pluralSeparator ?? '_'
+      const contextSeparator = this.config.extract.contextSeparator ?? '_'
+
+      const primaryLang = this.config.extract?.primaryLanguage || (Array.isArray(this.config.locales) ? this.config.locales[0] : undefined) || 'en'
+      let primaryIsSingleOther = false
+      try {
+        const primaryCats = safePluralRules(primaryLang, { type }).resolvedOptions().pluralCategories
+        if (primaryCats.length === 1 && primaryCats[0] === 'other') primaryIsSingleOther = true
+      } catch {
+        primaryIsSingleOther = false
+      }
+
+      const isSingleOther = primaryIsSingleOther || (pluralCategories.length === 1 && pluralCategories[0] === 'other')
+
+      const keysToGenerate: Array<{ key: string, context?: string }> = []
+
+      if (context !== undefined) {
+        keysToGenerate.push({ key, context })
+      } else {
+        keysToGenerate.push({ key })
+      }
+
+      if (isSingleOther) {
+        for (const { key: baseKey, context } of keysToGenerate) {
+          const finalKey = context ? `${baseKey}${contextSeparator}${context}` : baseKey
+          this.pluginContext.addKey({ key: finalKey, ns, hasCount: true })
+        }
+        return
+      }
+
+      for (const { key: baseKey, context } of keysToGenerate) {
+        for (const category of pluralCategories) {
+          let finalKey: string
+          if (context) {
+            finalKey = `${baseKey}${contextSeparator}${context}${pluralSeparator}${category}`
+          } else {
+            finalKey = `${baseKey}${pluralSeparator}${category}`
+          }
+          this.pluginContext.addKey({ key: finalKey, ns, hasCount: true })
+        }
+      }
+    } catch (e) {
+      this.pluginContext.addKey({ key, ns })
+    }
+  }
+
+  /**
+   * Processed a call expression to extract keys from the specified argument.
+   *
+   * @param node - The call expression node
+   * @param argIndex - The index of the argument to process
+   * @returns An object containing the keys to process and a flag indicating if the selector API is used
+   */
+  private handleCallExpressionArgument (
+    node: CallExpression,
+    argIndex: number,
+    scopeInfo?: ScopeInfo
+  ): { keysToProcess: string[]; originalKeysToProcess: string[]; isSelectorAPI: boolean } {
+    const firstArg = unwrapParens(node.arguments[argIndex].expression)
+    const keysToProcess: string[] = []
+    // Mirror of keysToProcess BEFORE selector-ns rewriting. For non-selector
+    // calls and selector calls that don't trigger a rewrite, both arrays hold
+    // identical strings. Used by the default-value heuristic so a synthetic
+    // `ns:key` from selector rewriting doesn't surface as the dv.
+    const originalKeysToProcess: string[] = []
+    let isSelectorAPI = false
+
+    if (firstArg.type === 'ArrowFunctionExpression') {
+      const keys = this.extractKeysFromSelector(firstArg)
+      if (keys.length > 0) {
+        for (const k of keys) {
+          originalKeysToProcess.push(k)
+          keysToProcess.push(applySelectorNsRewrite(k, scopeInfo, this.config))
+        }
+        isSelectorAPI = true
+      }
+    } else if (firstArg.type === 'ArrayExpression') {
+      for (const element of firstArg.elements) {
+        if (element?.expression) {
+          const resolved = this.expressionResolver.resolvePossibleKeyStringValues(element.expression)
+          keysToProcess.push(...resolved)
+          originalKeysToProcess.push(...resolved)
+        }
+      }
+    } else {
+      const resolved = this.expressionResolver.resolvePossibleKeyStringValues(firstArg)
+      keysToProcess.push(...resolved)
+      originalKeysToProcess.push(...resolved)
+    }
+
+    // Filter empties on both arrays in lockstep to keep them index-aligned.
+    const filteredKeys: string[] = []
+    const filteredOriginals: string[] = []
+    for (let i = 0; i < keysToProcess.length; i++) {
+      if (keysToProcess[i]) {
+        filteredKeys.push(keysToProcess[i])
+        filteredOriginals.push(originalKeysToProcess[i])
+      }
+    }
+
+    return {
+      keysToProcess: filteredKeys,
+      originalKeysToProcess: filteredOriginals,
+      isSelectorAPI,
+    }
+  }
+
+  /**
+   * Extracts translation key(s) from selector API arrow function.
+   *
+   * Processes selector expressions like:
+   * - `$ => $.path.to.key` → ['path.to.key']
+   * - `$ => $.app['title'].main` → ['app.title.main']
+   * - `$ => { return $.nested.key; }` → ['nested.key']
+   * - `$ => $.table.columns[field]` → ['table.columns.name', 'table.columns.age']
+   *   (when `field` resolves to `"name" | "age"`)
+   *
+   * Handles both dot notation and bracket notation, respecting
+   * the configured key separator or flat key structure. Dynamic
+   * bracket expressions are resolved via the expression resolver.
+   *
+   * @param node - Arrow function expression from selector call
+   * @returns Extracted key paths, or empty array if not statically analyzable
+   */
+  private extractKeysFromSelector (node: ArrowFunctionExpression): string[] {
+    let body = node.body
+
+    // Handle block bodies, e.g., $ => { return $.key; }
+    // swc >=1.16 types function bodies as 'FunctionBody'; older versions used 'BlockStatement'.
+    if (body.type === 'BlockStatement' || (body.type as string) === 'FunctionBody') {
+      const returnStmt = (body as any).stmts.find((s: any) => s.type === 'ReturnStatement')
+      if (returnStmt?.type === 'ReturnStatement' && returnStmt.argument) {
+        body = returnStmt.argument
+      } else {
+        return []
+      }
+    }
+
+    return this.extractKeysFromSelectorExpression(body as any)
+  }
+
+  /**
+   * Recursively extracts key paths from a selector-body expression.
+   *
+   * On top of the straight MemberExpression walk this also descends into
+   * branching forms so keys referenced in either branch are preserved
+   * (see #247): ternaries (`cond ? $.a : $.b`), nullish/logical
+   * short-circuits (`x ?? $.a`, `x && $.a`, `x || $.a`), and common
+   * wrapper nodes (parentheses, TS type assertions).
+   */
+  private extractKeysFromSelectorExpression (expr: any): string[] {
+    if (!expr) return []
+
+    // Unwrap wrappers that don't change the expressed key path.
+    if (
+      expr.type === 'ParenthesisExpression' ||
+      expr.type === 'TsAsExpression' ||
+      expr.type === 'TsSatisfiesExpression' ||
+      expr.type === 'TsNonNullExpression' ||
+      expr.type === 'TsConstAssertion'
+    ) {
+      return this.extractKeysFromSelectorExpression(expr.expression)
+    }
+
+    // Ternary: union of both branches.
+    if (expr.type === 'ConditionalExpression') {
+      return [
+        ...this.extractKeysFromSelectorExpression(expr.consequent),
+        ...this.extractKeysFromSelectorExpression(expr.alternate),
+      ]
+    }
+
+    // Short-circuit logicals (`||`, `&&`, `??`): union of both sides. SWC
+    // may emit these as LogicalExpression or BinaryExpression depending on
+    // version, so accept both.
+    if (
+      (expr.type === 'LogicalExpression' || expr.type === 'BinaryExpression') &&
+      (expr.operator === '||' || expr.operator === '&&' || expr.operator === '??')
+    ) {
+      return [
+        ...this.extractKeysFromSelectorExpression(expr.left),
+        ...this.extractKeysFromSelectorExpression(expr.right),
+      ]
+    }
+
+    if (expr.type !== 'MemberExpression') return []
+
+    let current: any = expr
+    // Each element is an array of possible values for that position in the key path
+    const parts: string[][] = []
+
+    // Recursively walk down MemberExpressions
+    while (current.type === 'MemberExpression') {
+      const prop = current.property
+
+      if (prop.type === 'Identifier') {
+        // This handles dot notation: .key
+        parts.unshift([prop.value])
+      } else if (prop.type === 'Computed' && prop.expression.type === 'StringLiteral') {
+        // This handles bracket notation with string literal: ['key']
+        parts.unshift([prop.expression.value])
+      } else if (prop.type === 'Computed' && prop.expression) {
+        // This is a dynamic property like [myVar] — try to resolve it
+        const resolved = this.expressionResolver.resolvePossibleKeyStringValues(prop.expression)
+        if (resolved.length > 0) {
+          parts.unshift(resolved)
+        } else {
+          return []
+        }
+      } else {
+        return []
+      }
+
+      current = current.object
+    }
+
+    if (parts.length > 0) {
+      const keySeparator = this.config.extract.keySeparator
+      const joiner = typeof keySeparator === 'string' ? keySeparator : '.'
+
+      // Compute the cartesian product of all parts to generate all possible keys
+      let combinations: string[][] = [[]]
+      for (const part of parts) {
+        const newCombinations: string[][] = []
+        for (const combo of combinations) {
+          for (const value of part) {
+            newCombinations.push([...combo, value])
+          }
+        }
+        combinations = newCombinations
+      }
+
+      return combinations.map(combo => combo.join(joiner))
+    }
+
+    return []
+  }
+
+  /**
+   * Generates plural form keys based on the primary language's plural rules.
+   *
+   * Uses Intl.PluralRules to determine the correct plural categories
+   * for the configured primary language and generates suffixed keys
+   * for each category (e.g., 'item_one', 'item_other').
+   *
+   * @param key - Base key name for pluralization
+   * @param ns - Namespace for the keys
+   * @param options - object expression options
+   * @param isOrdinal - isOrdinal flag
+   */
+  private handlePluralKeys (key: string, ns: string | false | undefined, options: ObjectExpression, isOrdinal: boolean, defaultValueFromCall?: string, explicitDefaultFromSource?: boolean, locations?: Array<{ file: string; line: number; column: number }>): void {
+    try {
+      const type = isOrdinal ? 'ordinal' : 'cardinal'
+
+      // Generate plural forms for ALL target languages to ensure we have all necessary keys
+      const allPluralCategories = new Set<string>()
+
+      for (const locale of this.config.locales) {
+        try {
+          const pluralRules = safePluralRules(locale, { type })
+          const categories = pluralRules.resolvedOptions().pluralCategories
+          categories.forEach(cat => allPluralCategories.add(cat))
+        } catch (e) {
+          // If a locale is invalid, fall back to English rules
+          const englishRules = safePluralRules('en', { type })
+          const categories = englishRules.resolvedOptions().pluralCategories
+          categories.forEach(cat => allPluralCategories.add(cat))
+        }
+      }
+
+      const pluralSeparator = this.config.extract.pluralSeparator ?? '_'
+
+      // i18next supports a special _zero form (not part of CLDR plural rules).
+      // When defaultValue_zero is present in the options, include 'zero' in the
+      // categories so that key_zero is generated with the correct default value.
+      // See: https://www.i18next.com/translation-function/plurals#special-zero
+      const zeroDefault = this.getDefaultValueProp(options, `defaultValue${pluralSeparator}zero`)
+      if (typeof zeroDefault === 'string' && !allPluralCategories.has('zero')) {
+        allPluralCategories.add('zero')
+      }
+
+      const pluralCategories = Array.from(allPluralCategories).sort()
+
+      // Get all possible default values once at the start
+      const defaultValue = this.getDefaultValueProp(options, 'defaultValue')
+      const otherDefault = this.getDefaultValueProp(options, `defaultValue${pluralSeparator}other`)
+      const ordinalOtherDefault = this.getDefaultValueProp(options, `defaultValue${pluralSeparator}ordinal${pluralSeparator}other`)
+
+      // Handle context - both static and dynamic
+      const contextPropValue = getObjectPropValueExpression(options, 'context')
+      const keysToGenerate: Array<{ key: string, context?: string }> = []
+
+      if (contextPropValue) {
+        // Handle dynamic context by resolving all possible values
+        const contextValues = this.expressionResolver.resolvePossibleContextStringValues(contextPropValue)
+
+        if (contextValues.length > 0) {
+          // For static context (string literal), only generate context variants
+          if (contextPropValue.type === 'StringLiteral') {
+            // Only generate context-specific plural forms, no base forms
+            for (const contextValue of contextValues) {
+              if (contextValue.length > 0) {
+                keysToGenerate.push({ key, context: contextValue })
+              }
+            }
+          } else {
+            // For dynamic context, generate context variants AND base forms
+            for (const contextValue of contextValues) {
+              if (contextValue.length > 0) {
+                keysToGenerate.push({ key, context: contextValue })
+              }
+            }
+
+            // Only generate base plural forms if generateBasePluralForms is not disabled
+            const shouldGenerateBaseForms = this.config.extract?.generateBasePluralForms !== false
+            if (shouldGenerateBaseForms) {
+              keysToGenerate.push({ key })
+            }
+          }
+        } else {
+          // Couldn't resolve context, fall back to base key only
+          keysToGenerate.push({ key })
+        }
+      } else {
+        // No context, always generate base plural forms
+        keysToGenerate.push({ key })
+      }
+
+      // If the only plural category across configured locales is "other",
+      // prefer the base key (no "_other" suffix) as it's more natural for languages
+      // with no grammatical plural forms (ja/zh/ko).
+      // Prefer the configured primaryLanguage as signal for single-"other" languages.
+      // If primaryLanguage indicates single-"other", treat as that case; otherwise
+      // fall back to earlier union-of-locales check that produced `pluralCategories`.
+      const primaryLang = this.config.extract?.primaryLanguage || (Array.isArray(this.config.locales) ? this.config.locales[0] : undefined) || 'en'
+      let primaryIsSingleOther = false
+      try {
+        const primaryCats = safePluralRules(primaryLang, { type }).resolvedOptions().pluralCategories
+        if (primaryCats.length === 1 && primaryCats[0] === 'other') primaryIsSingleOther = true
+      } catch {
+        primaryIsSingleOther = false
+      }
+
+      if (primaryIsSingleOther || (pluralCategories.length === 1 && pluralCategories[0] === 'other')) {
+        for (const { key: baseKey, context } of keysToGenerate) {
+          const specificOther = this.getDefaultValueProp(options, `defaultValue${pluralSeparator}other`)
+          // Final default resolution:
+          // 1) plural-specific defaultValue_other
+          // 2) general defaultValue (from options)
+          // 3) defaultValueFromCall (string arg)
+          // 4) fallback to key (or context-key for context variants)
+          let finalDefaultValue: string | undefined
+          if (typeof specificOther === 'string') {
+            finalDefaultValue = specificOther
+          } else if (typeof defaultValue === 'string') {
+            finalDefaultValue = defaultValue
+          } else if (typeof defaultValueFromCall === 'string') {
+            finalDefaultValue = defaultValueFromCall
+          } else {
+            finalDefaultValue = context ? `${baseKey}_${context}` : baseKey
+          }
+
+          const ctxSep = this.config.extract.contextSeparator ?? '_'
+          const finalKey = context ? `${baseKey}${ctxSep}${context}` : baseKey
+
+          this.pluginContext.addKey({
+            key: finalKey,
+            ns,
+            defaultValue: finalDefaultValue,
+            hasCount: true,
+            isOrdinal,
+            explicitDefault: Boolean(explicitDefaultFromSource || typeof specificOther === 'string'),
+            locations
+          })
+        }
+        return
+      }
+
+      // Generate plural forms for each key variant
+      for (const { key: baseKey, context } of keysToGenerate) {
+        for (const category of pluralCategories) {
+          // 1. Look for the most specific default value
+          const specificDefaultKey = isOrdinal ? `defaultValue${pluralSeparator}ordinal${pluralSeparator}${category}` : `defaultValue${pluralSeparator}${category}`
+          const specificDefault = this.getDefaultValueProp(options, specificDefaultKey)
+
+          // 2. Determine the final default value using the ORIGINAL fallback chain with corrections
+          let finalDefaultValue: string | undefined
+          if (typeof specificDefault === 'string') {
+            // Most specific: defaultValue_one, defaultValue_ordinal_other, etc.
+            finalDefaultValue = specificDefault
+          } else if (category === 'one' && typeof defaultValue === 'string') {
+            // For "one" category, prefer the general defaultValue
+            finalDefaultValue = defaultValue
+          } else if (category === 'one' && typeof defaultValueFromCall === 'string') {
+            // For "one" category, also consider defaultValueFromCall
+            finalDefaultValue = defaultValueFromCall
+          } else if (isOrdinal && typeof ordinalOtherDefault === 'string') {
+            // For ordinals (non-one categories), fall back to ordinal_other
+            finalDefaultValue = ordinalOtherDefault
+          } else if (!isOrdinal && typeof otherDefault === 'string') {
+            // For cardinals (non-one categories), fall back to _other
+            finalDefaultValue = otherDefault
+          } else if (typeof defaultValue === 'string') {
+            // General defaultValue as fallback
+            finalDefaultValue = defaultValue
+          } else if (typeof defaultValueFromCall === 'string') {
+            // defaultValueFromCall as fallback
+            finalDefaultValue = defaultValueFromCall
+          } else {
+            // Final fallback to the base key itself
+            finalDefaultValue = baseKey
+          }
+
+          // 3. Construct the final plural key
+          let finalKey: string
+          if (context) {
+            const contextSeparator = this.config.extract.contextSeparator ?? '_'
+            finalKey = isOrdinal
+              ? `${baseKey}${contextSeparator}${context}${pluralSeparator}ordinal${pluralSeparator}${category}`
+              : `${baseKey}${contextSeparator}${context}${pluralSeparator}${category}`
+          } else {
+            finalKey = isOrdinal
+              ? `${baseKey}${pluralSeparator}ordinal${pluralSeparator}${category}`
+              : `${baseKey}${pluralSeparator}${category}`
+          }
+
+          this.pluginContext.addKey({
+            key: finalKey,
+            ns,
+            defaultValue: finalDefaultValue,
+            hasCount: true,
+            isOrdinal,
+            // Only treat plural/context variant as explicit when:
+            // - the extractor marked the source as explicitly providing plural defaults
+            // - OR a plural-specific default was provided in the options (specificDefault/otherDefault)
+            // Do NOT treat the presence of a general base defaultValueFromCall as making variants explicit.
+            explicitDefault: Boolean(explicitDefaultFromSource || typeof specificDefault === 'string' || typeof otherDefault === 'string'),
+            // If this is a context variant, track the base key (without context or plural suffixes)
+            keyAcceptingContext: context !== undefined ? key : undefined,
+            locations
+          })
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`Could not determine plural rules for language "${this.config.extract?.primaryLanguage}". Falling back to simple key extraction.`)
+      // Fallback to a simple key if Intl API fails
+      const defaultValue = defaultValueFromCall || this.getDefaultValueProp(options, 'defaultValue')
+      this.pluginContext.addKey({ key, ns, defaultValue: typeof defaultValue === 'string' ? defaultValue : key, locations })
+    }
+  }
+
+  /**
+   * Serializes a callee node (Identifier or MemberExpression) into a string.
+   *
+   * Produces a dotted name for simple callees that can be used for scope lookups
+   * or configuration matching.
+   *
+   * @param callee - The CallExpression callee node to serialize
+   * @returns A dotted string name for supported callees, or null when the callee
+   *          is a computed/unsupported expression.
+   */
+  private getFunctionName (callee: CallExpression['callee']): string | null {
+    if (callee.type === 'Identifier') {
+      return callee.value
+    }
+    if (callee.type === 'MemberExpression') {
+      const parts: string[] = []
+      let current: any = callee
+      while (current.type === 'MemberExpression') {
+        if (current.property.type === 'Identifier') {
+          parts.unshift(current.property.value)
+        } else {
+          return null // Cannot handle computed properties like i18n['t']
+        }
+        current = current.object
+      }
+      // Handle `this` as the base of the expression (e.g., this._i18n.t)
+      if (current.type === 'ThisExpression') {
+        parts.unshift('this')
+      } else if (current.type === 'Identifier') {
+        parts.unshift(current.value)
+      } else {
+        return null // Base of the expression is not a simple identifier
+      }
+      return parts.join('.')
+    }
+    return null
+  }
+}

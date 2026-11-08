@@ -1,0 +1,1134 @@
+import { vol } from 'memfs'
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { resolve } from 'path'
+import type { I18nextToolkitConfig } from '../src/index'
+
+// Mock filesystem used by extractor (both sync and promises layers)
+vi.mock('fs', async () => {
+  const memfs = await vi.importActual<typeof import('memfs')>('memfs')
+  return memfs.fs
+})
+vi.mock('fs/promises', async () => {
+  const memfs = await vi.importActual<typeof import('memfs')>('memfs')
+  return memfs.fs.promises
+})
+
+// Mock glob so extractor only scans test files we create in memfs
+vi.mock('glob', () => ({ glob: vi.fn() }))
+
+// Import runStatus AFTER mocks so internal modules use the mocked fs/glob
+const { runStatus } = await import('../src/index')
+
+const mockConfig: I18nextToolkitConfig = {
+  locales: ['en', 'de', 'fr'],
+  extract: {
+    input: ['src/**/*.{ts,tsx}'],
+    output: 'locales/{{language}}/{{namespace}}.json',
+  },
+}
+
+describe('status (summary view)', () => {
+  let consoleLogSpy: any
+  let processExitSpy: any
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+    // provide deterministic glob results: return only files we create in this test's memfs
+    const { glob } = await import('glob')
+    vi.mocked(glob).mockImplementation(async (pattern: any, options?: any) => {
+      // Return any memfs path that contains a /src/ segment (files are created with absolute cwd paths)
+      return Object.keys(vol.toJSON()).filter(p => p.includes('/src/'))
+    })
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('Process exit called')
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('should generate a correct status report for partially translated languages and exit with code 1', async () => {
+    // Create source files that the real extractor will scan
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/file1.ts')]: `
+        import { t } from 'i18next'
+        t('key.a')
+        t('key.d')
+        t('key.c')
+        t('key.b')
+      `,
+      // translations present in memfs
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        key: { a: 'Wert A', b: 'Wert B' },
+      }),
+      [resolve(process.cwd(), 'locales/fr/translation.json')]: JSON.stringify({
+        key: { a: 'Valeur A', b: 'Valeur B', c: 'Valeur C' },
+      }),
+    })
+
+    try {
+      await runStatus(mockConfig)
+    } catch (e) {
+      // Expected to throw when process.exit is called
+    }
+
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('🔑 Keys Found:         4'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('📚 Namespaces Found:   1'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- de: [■■■■■■■■■■□□□□□□□□□□] 50% (2/4 keys)'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- fr: [■■■■■■■■■■■■■■■□□□□□] 75% (3/4 keys)'))
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should handle flat translation files when defaultNS=false and mergeNamespaces=true and exit on incomplete', async () => {
+    // reproduce issue: flat keys (no namespace) + defaultNS=false + mergeNamespaces=true
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de', 'fr'],
+      extract: {
+        input: ['src/**/*.{ts,tsx}'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        defaultNS: false,
+        mergeNamespaces: true,
+      },
+    }
+
+    // source uses flat keys (no namespace prefixes)
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/file-flat.ts')]: `
+        import { t } from 'i18next'
+        t('a')
+        t('d')
+        t('c')
+        t('b')
+      `,
+      // flat translation files (no nested namespace objects)
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        a: 'Wert A',
+        b: 'Wert B',
+      }),
+      [resolve(process.cwd(), 'locales/fr/translation.json')]: JSON.stringify({
+        a: 'Valeur A',
+        b: 'Valeur B',
+        c: 'Valeur C',
+      }),
+    })
+
+    try {
+      await runStatus(config)
+    } catch (e) {
+      // Expected to throw when process.exit is called
+    }
+
+    // expect same sensible counts as namespaced case: 4 keys total, de=2/4, fr=3/4
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('🔑 Keys Found:         4'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('📚 Namespaces Found:   1'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- de:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('50% (2/4'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- fr:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('75% (3/4'))
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should correctly calculate progress with multiple namespaces and exit on incomplete', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/app.ts')]: `
+        import { t } from 'i18next'
+        t('app.title')
+        t('app.welcome')
+        t('app.error')
+        t('app.loading')
+      `,
+      [resolve(process.cwd(), 'src/common.ts')]: `
+        import { t } from 'i18next'
+        t('button.save')
+        t('button.cancel')
+      `,
+      // translations in memfs
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        app: { title: 'Titel', welcome: 'Willkommen', error: 'Fehler' },
+      }),
+      [resolve(process.cwd(), 'locales/de/common.json')]: JSON.stringify({
+        button: { save: 'Speichern' },
+      }),
+    })
+
+    try {
+      await runStatus(mockConfig)
+    } catch (e) {
+      // Expected to throw when process.exit is called
+    }
+
+    // Total keys = 6. Translated (in the single namespace the extractor detected) = 3.
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('🔑 Keys Found:         6'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('📚 Namespaces Found:   1'))
+    // be resilient: check progress numbers rather than exact progress-bar glyphs
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- de:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('50% (3/6'))
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should not exit with error code when ordinal plural translations are complete', async () => {
+    // Create source that uses an ordinal plural invocation.
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/ordinal.ts')]: `
+        import { t } from 'i18next'
+        const count = 2
+        // extractor should detect hasCount and ordinal=true from this call shape
+        t('place', { count, ordinal: true })
+      `,
+      // German primary language has complete ordinal forms (2 forms: one, other)
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        place_ordinal_one: '1. Platz',
+        place_ordinal_other: 'n-ter Platz',
+      }),
+      // English ordinals have 4 forms (one, two, few, other) - all provided
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({
+        place_ordinal_one: '1st place',
+        place_ordinal_two: '2nd place',
+        place_ordinal_few: '3rd place',
+        place_ordinal_other: 'nth place',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['de', 'en'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'de',
+      },
+    }
+
+    await runStatus(config)
+
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- en:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (4/4 keys)'))
+    expect(processExitSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('status (detailed view)', () => {
+  let consoleLogSpy: any
+  let consoleErrorSpy: any
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+    const { glob } = await import('glob')
+    vi.mocked(glob).mockImplementation(async (pattern: any, options?: any) => {
+      // Return any memfs path that contains a /src/ segment (files are created with absolute cwd paths)
+      return Object.keys(vol.toJSON()).filter(p => p.includes('/src/'))
+    })
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('should report all keys present when checking the primary language with no missing keys', async () => {
+    // no source keys => extractor returns zero keys, so nothing can be absent
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/empty.ts')]: 'console.log(\'no keys\')',
+    })
+
+    await runStatus(mockConfig, { detail: 'en' })
+
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('All keys used in code are present'))
+  })
+
+  it('should show an error for an invalid locale', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/empty2.ts')]: 'console.log(\'no keys\')',
+    })
+
+    await runStatus(mockConfig, { detail: 'jp' })
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('is not defined in your configuration'))
+  })
+})
+
+describe('status (namespace filtering)', () => {
+  let consoleLogSpy: any
+  let processExitSpy: any
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+    const { glob } = await import('glob')
+    vi.mocked(glob).mockImplementation(async (pattern: any, options?: any) => {
+      // Return any memfs path that contains a /src/ segment (files are created with absolute cwd paths)
+      return Object.keys(vol.toJSON()).filter(p => p.includes('/src/'))
+    })
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('Process exit called')
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('should filter the detailed report by a single namespace', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/app.ts')]: `
+        import { t } from 'i18next'
+        t('app.title')
+        t('common:button.save')
+      `,
+      [resolve(process.cwd(), 'locales/de/common.json')]: JSON.stringify({
+        button: { save: 'Speichern' },
+      }),
+    })
+
+    await runStatus(mockConfig, { detail: 'de', namespace: 'common' })
+
+    // Ensure the detailed report includes the namespaced key and excludes other keys
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('button.save'))
+    expect(consoleLogSpy).not.toHaveBeenCalledWith(expect.stringContaining('app.title'))
+  })
+
+  it('should filter the summary report by a single namespace', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/fileA.ts')]: `
+        import { t } from 'i18next'
+        t('key1')
+        t('key2')
+      `,
+      [resolve(process.cwd(), 'src/fileB.ts')]: `
+        import { t } from 'i18next'
+        t('common:keyA')
+        t('common:keyB')
+      `,
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({ key1: 'Wert 1' }),
+      [resolve(process.cwd(), 'locales/de/common.json')]: JSON.stringify({ keyA: 'Wert A', keyB: 'Wert B' }),
+    })
+
+    await runStatus(mockConfig, { namespace: 'common' })
+
+    // The summary for the 'common' namespace should show two keys and full translation coverage
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Status for Namespace'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- de:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2'))
+  })
+
+  it('should correctly report status for Arabic when primary language is English and exit on incomplete', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/item.ts')]: `
+        import { t } from 'i18next'
+        t('item', { count: 1 })
+      `,
+      [resolve(process.cwd(), 'locales/ar/translation.json')]: JSON.stringify({
+        item_one: 'قطعة واحدة',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'ar'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'en',
+      },
+    }
+
+    try {
+      await runStatus(config)
+    } catch (e) {
+      // Expected to throw when process.exit is called
+    }
+
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- ar: [■■■□□□□□□□□□□□□□□□□□] 17% (1/6 keys)'))
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should correctly report status for English when primary language is Arabic', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/item2.ts')]: `
+        import { t } from 'i18next'
+        t('item', { count: 1 })
+      `,
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({
+        item_one: 'one item',
+        item_other: 'other items',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['ar', 'en'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'ar',
+      },
+    }
+
+    await runStatus(config)
+
+    // English should be 100% complete (2/2 keys) because English only needs 'one' and 'other' forms
+    // Each language is evaluated based on its own plural rules, not the primary language's rules
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- en:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2 keys)'))
+  })
+})
+
+describe('status (plurals)', () => {
+  let consoleLogSpy: any
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+    const { glob } = await import('glob')
+    vi.mocked(glob).mockImplementation(async (pattern: any, options?: any) => {
+      // Return any memfs path that contains a /src/ segment (files are created with absolute cwd paths)
+      return Object.keys(vol.toJSON()).filter(p => p.includes('/src/'))
+    })
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('should not double-expand already-expanded plural keys (regression)', async () => {
+    // Create source that results in already-expanded plural keys being found by the real extractor.
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/plural-expanded.ts')]: `
+        import { t } from 'i18next'
+        t('key_one')
+        t('key_other')
+      `,
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({
+        key_one: 'One item',
+        key_other: '{{count}} items',
+      }),
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        key_one: 'Ein Element',
+        key_other: '{{count}} Elemente',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'en',
+      },
+    }
+
+    await runStatus(config)
+
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('🔑 Keys Found:         2'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('📚 Namespaces Found:   1'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- de: [■■■■■■■■■■■■■■■■■■■■] 100% (2/2 keys)'))
+  })
+
+  it('should correctly report status for Swedish without requiring French plural forms', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/cake.tsx')]: `
+        import { useTranslation } from 'react-i18next'
+        export const CakeComponent = ({ cakeCount }) => {
+          const [t] = useTranslation("common")
+          return <div>{t('cake', { count: cakeCount })}</div>
+        }
+      `,
+      [resolve(process.cwd(), 'locales/en/common.json')]: JSON.stringify({
+        cake_one: 'One cake',
+        cake_other: '{{count}} cakes',
+      }),
+      [resolve(process.cwd(), 'locales/sv/common.json')]: JSON.stringify({
+        cake_one: 'En tårta',
+        cake_other: '{{count}} tårtor',
+      }),
+      [resolve(process.cwd(), 'locales/fr/common.json')]: JSON.stringify({
+        cake_one: 'Un gâteau',
+        cake_many: 'Beaucoup de gâteaux',
+        cake_other: '{{count}} gâteaux',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'sv', 'fr'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'en',
+      },
+    }
+
+    await runStatus(config)
+
+    // Swedish should be 100% complete (2/2 keys), not 67% (2/3 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- sv:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2 keys)'))
+
+    // French should be 100% complete (3/3 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- fr:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (3/3 keys)'))
+  })
+
+  it('should correctly report status for German when Arabic has more plural forms', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/issue138.ts')]: `
+        import { t } from 'i18next'
+        t('key', { count: 1 })
+      `,
+      // English (primary)
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({
+        key_one: 'one',
+        key_other: 'other',
+      }),
+      // German (secondary) - 2 forms
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        key_one: 'eins',
+        key_other: 'andere',
+      }),
+      // Arabic (secondary) - 6 forms (zero, one, two, few, many, other)
+      [resolve(process.cwd(), 'locales/ar/translation.json')]: JSON.stringify({
+        key_zero: '0',
+        key_one: '1',
+        key_two: '2',
+        key_few: '3-10',
+        key_many: '11-99',
+        key_other: '100+',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de', 'ar'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'en',
+      },
+    }
+
+    await runStatus(config, { detail: 'de' })
+
+    // German should be 100% (2/2 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Key Status for "de"'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2)'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('🎉 All keys are translated for "de"'))
+  })
+
+  it('should correctly report overall status for German when Arabic has more plural forms', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/issue138.ts')]: `
+        import { t } from 'i18next'
+        t('key', { count: 1 })
+      `,
+      // English (primary)
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({
+        key_one: 'one',
+        key_other: 'other',
+      }),
+      // German (secondary) - 2 forms
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        key_one: 'eins',
+        key_other: 'andere',
+      }),
+      // Arabic (secondary) - 6 forms (zero, one, two, few, many, other)
+      [resolve(process.cwd(), 'locales/ar/translation.json')]: JSON.stringify({
+        key_zero: '0',
+        key_one: '1',
+        key_two: '2',
+        key_few: '3-10',
+        key_many: '11-99',
+        key_other: '100+',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de', 'ar'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'en',
+      },
+    }
+
+    await runStatus(config)
+
+    // German should be 100% (2/2 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- de:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2 keys)'))
+
+    // Arabic should be 100% (6/6 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- ar:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (6/6 keys)'))
+  })
+
+  it('should correctly report status for German when primary language is Arabic', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/issue138_inverse.ts')]: `
+        import { t } from 'i18next'
+        t('key', { count: 1 })
+      `,
+      // Arabic (primary) - 6 forms
+      [resolve(process.cwd(), 'locales/ar/translation.json')]: JSON.stringify({
+        key_zero: '0',
+        key_one: '1',
+        key_two: '2',
+        key_few: '3-10',
+        key_many: '11-99',
+        key_other: '100+',
+      }),
+      // German (secondary) - 2 forms
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        key_one: 'eins',
+        key_other: 'andere',
+      }),
+      // English (secondary) - 2 forms
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({
+        key_one: 'one',
+        key_other: 'other',
+      }),
+      // French (secondary) - 3 forms (one, many, other)
+      [resolve(process.cwd(), 'locales/fr/translation.json')]: JSON.stringify({
+        key_one: 'un',
+        key_many: 'beaucoup',
+        key_other: 'autres',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['ar', 'de', 'en', 'fr'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'ar',
+      },
+    }
+
+    await runStatus(config, { detail: 'de' })
+
+    // German should be 100% (2/2 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Key Status for "de"'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2)'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('🎉 All keys are translated for "de"'))
+  })
+
+  it('should correctly report overall status when primary language is Arabic', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/issue138_inverse.ts')]: `
+        import { t } from 'i18next'
+        t('key', { count: 1 })
+      `,
+      // Arabic (primary) - 6 forms
+      [resolve(process.cwd(), 'locales/ar/translation.json')]: JSON.stringify({
+        key_zero: '0',
+        key_one: '1',
+        key_two: '2',
+        key_few: '3-10',
+        key_many: '11-99',
+        key_other: '100+',
+      }),
+      // German (secondary) - 2 forms
+      [resolve(process.cwd(), 'locales/de/translation.json')]: JSON.stringify({
+        key_one: 'eins',
+        key_other: 'andere',
+      }),
+      // English (secondary) - 2 forms
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({
+        key_one: 'one',
+        key_other: 'other',
+      }),
+      // French (secondary) - 3 forms (one, many, other)
+      [resolve(process.cwd(), 'locales/fr/translation.json')]: JSON.stringify({
+        key_one: 'un',
+        key_many: 'beaucoup',
+        key_other: 'autres',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['ar', 'de', 'en', 'fr'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        primaryLanguage: 'ar',
+      },
+    }
+
+    await runStatus(config)
+
+    // German should be 100% (2/2 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- de:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2 keys)'))
+
+    // English should be 100% (2/2 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- en:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (2/2 keys)'))
+
+    // French should be 100% (3/3 keys)
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('- fr:'))
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('100% (3/3 keys)'))
+  })
+})
+
+describe('status (fallbackNS)', () => {
+  let consoleLogSpy: any
+  // let consoleErrorSpy: any
+  let processExitSpy: any
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+    const { glob } = await import('glob')
+    vi.mocked(glob).mockImplementation(async (pattern: any, options?: any) => {
+      return Object.keys(vol.toJSON()).filter(p => p.includes('/src/'))
+    })
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    // consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('Process exit called')
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('should not flag keys as missing if present in fallbackNS', async () => {
+    // Simulate the scenario from the bug report
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/app.tsx')]: `
+        import { useTranslation } from 'react-i18next'
+        export default function App() {
+          const { t } = useTranslation('feature')
+          return (
+            <div>
+              <p>{t('feature-specific')}</p>
+              <p>{t('ok')}</p>
+              <p>{t('cancel')}</p>
+            </div>
+          )
+        }
+      `,
+      [resolve(process.cwd(), 'locales/en/shared.json')]: JSON.stringify({
+        ok: 'This is a common string that can be used anywhere',
+        cancel: 'This is a common string',
+      }),
+      [resolve(process.cwd(), 'locales/en/feature.json')]: JSON.stringify({
+        'feature-specific': 'This is a feature-specific string',
+        cancel: 'This is an override of a common string',
+      }),
+      [resolve(process.cwd(), 'locales/de/shared.json')]: JSON.stringify({
+        ok: 'Das ist ein common text der überall verwendet werden kann',
+        cancel: 'Das ist ein common text',
+      }),
+      [resolve(process.cwd(), 'locales/de/feature.json')]: JSON.stringify({
+        'feature-specific': 'Das ist ein feature-speziefischer text',
+        cancel: 'Das sit ein überschriebener text gegenüber common',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        fallbackNS: 'shared',
+      },
+    }
+
+    await runStatus(config)
+
+    // const errorLogCalls = consoleErrorSpy.mock.calls.map((call: any[]) => call[0])
+
+    // Should not flag 'ok' as missing for feature namespace, since it's present in fallbackNS
+    const logCalls = consoleLogSpy.mock.calls.map((call: any[]) => call[0])
+    // Should include the expected summary lines
+    expect(logCalls).toContain('\ni18next Project Status')
+    expect(logCalls).toContain('------------------------')
+    expect(logCalls).toContain('🔑 Keys Found:         3')
+    expect(logCalls).toContain('📚 Namespaces Found:   1')
+    expect(logCalls).toContain('🌍 Locales:            en, de')
+    expect(logCalls).toContain('✅ Primary Language:   en')
+    expect(logCalls).toContain('\nTranslation Progress:')
+    // Should include the correct progress line for de (all keys present via fallbackNS)
+    expect(logCalls).toContain('- de: [■■■■■■■■■■■■■■■■■■■■] 100% (3/3 keys)')
+    expect(processExitSpy).not.toHaveBeenCalled()
+  })
+
+  it('should not flag keys as missing if present in fallbackNS with mergeNamespaces', async () => {
+    // Simulate scenario with mergeNamespaces: true and fallbackNS
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/app.tsx')]: `
+          import { useTranslation } from 'react-i18next'
+          export default function App() {
+            const { t } = useTranslation('feature')
+            return (
+              <div>
+                <p>{t('feature-specific')}</p>
+                <p>{t('ok')}</p>
+                <p>{t('cancel')}</p>
+              </div>
+            )
+          }
+        `,
+      [resolve(process.cwd(), 'locales/en.json')]: JSON.stringify({
+        shared: {
+          ok: 'This is a common string that can be used anywhere',
+          cancel: 'This is a common string',
+        },
+        feature: {
+          'feature-specific': 'This is a feature-specific string',
+          cancel: 'This is an override of a common string',
+        }
+      }),
+      [resolve(process.cwd(), 'locales/de.json')]: JSON.stringify({
+        shared: {
+          ok: 'Das ist ein common text der überall verwendet werden kann',
+          cancel: 'Das ist ein common text',
+        },
+        feature: {
+          'feature-specific': 'Das ist ein feature-speziefischer text',
+          cancel: 'Das sit ein überschriebener text gegenüber common',
+        }
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}.json',
+        fallbackNS: 'shared',
+        mergeNamespaces: true,
+      },
+    }
+
+    await runStatus(config)
+
+    const logCalls = consoleLogSpy.mock.calls.map((call: any[]) => call[0])
+    expect(logCalls).toContain('\ni18next Project Status')
+    expect(logCalls).toContain('------------------------')
+    expect(logCalls).toContain('🔑 Keys Found:         3')
+    expect(logCalls).toContain('📚 Namespaces Found:   1')
+    expect(logCalls).toContain('🌍 Locales:            en, de')
+    expect(logCalls).toContain('✅ Primary Language:   en')
+    expect(logCalls).toContain('\nTranslation Progress:')
+    // Should include the correct progress line for de (all keys present via fallbackNS)
+    expect(logCalls).toContain('- de: [■■■■■■■■■■■■■■■■■■■■] 100% (3/3 keys)')
+    expect(processExitSpy).not.toHaveBeenCalled()
+  })
+
+  // https://github.com/i18next/i18next-cli/issues/287
+  it('should read a fallback namespace split into its own file and hidden via ignoreNamespaces', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/app.tsx')]: `
+        import { useTranslation } from 'react-i18next'
+        export default function App() {
+          const { t } = useTranslation('feature')
+          return (
+            <div>
+              <p>{t('feature-specific')}</p>
+              <p>{t('ok')}</p>
+              <p>{t('cancel')}</p>
+            </div>
+          )
+        }
+      `,
+      [resolve(process.cwd(), 'locales/en.json')]: JSON.stringify({
+        feature: { 'feature-specific': 'This is a feature-specific string' },
+      }),
+      [resolve(process.cwd(), 'locales/de.json')]: JSON.stringify({
+        feature: { 'feature-specific': 'Das ist ein feature-spezifischer text' },
+      }),
+      // The fallback namespace lives in its own file, outside the merged one.
+      [resolve(process.cwd(), 'locales/en/shared.json')]: JSON.stringify({
+        ok: 'OK',
+        cancel: 'Cancel',
+      }),
+      [resolve(process.cwd(), 'locales/de/shared.json')]: JSON.stringify({
+        ok: 'OK',
+        cancel: 'Abbrechen',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de'],
+      extract: {
+        input: ['src/'],
+        output: (language: string, namespace?: string) =>
+          namespace === 'shared'
+            ? `locales/${language}/${namespace}.json`
+            : `locales/${language}.json`,
+        defaultNS: 'shared',
+        fallbackNS: 'shared',
+        ignoreNamespaces: ['shared'],
+        mergeNamespaces: true,
+      },
+    }
+
+    await runStatus(config)
+
+    const logCalls = consoleLogSpy.mock.calls.map((call: any[]) => call[0])
+    expect(logCalls).toContain('🔑 Keys Found:         3')
+    // All keys present: one in the merged file, two via the split fallback file
+    expect(logCalls).toContain('- de: [■■■■■■■■■■■■■■■■■■■■] 100% (3/3 keys)')
+    expect(processExitSpy).not.toHaveBeenCalled()
+  })
+
+  it('should warn when fallbackNS is in ignoreNamespaces but cannot be found', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/app.tsx')]: `
+        import { useTranslation } from 'react-i18next'
+        export default function App() {
+          const { t } = useTranslation('feature')
+          return <p>{t('ok')}</p>
+        }
+      `,
+      // The 'shared' fallback namespace is nowhere the CLI can see: not in the
+      // merged file, and the string output cannot address a per-namespace path.
+      [resolve(process.cwd(), 'locales/en.json')]: JSON.stringify({
+        feature: {},
+      }),
+      [resolve(process.cwd(), 'locales/de.json')]: JSON.stringify({
+        feature: {},
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}.json',
+        defaultNS: 'shared',
+        fallbackNS: 'shared',
+        ignoreNamespaces: ['shared'],
+        mergeNamespaces: true,
+      },
+    }
+
+    await runStatus(config)
+
+    expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('fallbackNS "shared" is listed in ignoreNamespaces'))
+  })
+
+  it('should support an array of fallback namespaces looked up in order', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/app.tsx')]: `
+        import { useTranslation } from 'react-i18next'
+        export default function App() {
+          const { t } = useTranslation('feature')
+          return (
+            <div>
+              <p>{t('feature-specific')}</p>
+              <p>{t('ok')}</p>
+              <p>{t('cancel')}</p>
+            </div>
+          )
+        }
+      `,
+      [resolve(process.cwd(), 'locales/en/common.json')]: JSON.stringify({
+        ok: 'OK',
+      }),
+      [resolve(process.cwd(), 'locales/en/shared.json')]: JSON.stringify({
+        cancel: 'Cancel',
+      }),
+      [resolve(process.cwd(), 'locales/en/feature.json')]: JSON.stringify({
+        'feature-specific': 'This is a feature-specific string',
+      }),
+      [resolve(process.cwd(), 'locales/de/common.json')]: JSON.stringify({
+        ok: 'OK',
+      }),
+      [resolve(process.cwd(), 'locales/de/shared.json')]: JSON.stringify({
+        cancel: 'Abbrechen',
+      }),
+      [resolve(process.cwd(), 'locales/de/feature.json')]: JSON.stringify({
+        'feature-specific': 'Das ist ein feature-spezifischer Text',
+      }),
+    })
+
+    const config: I18nextToolkitConfig = {
+      locales: ['en', 'de'],
+      extract: {
+        input: ['src/'],
+        output: 'locales/{{language}}/{{namespace}}.json',
+        fallbackNS: ['common', 'shared'],
+      },
+    }
+
+    await runStatus(config)
+
+    const logCalls = consoleLogSpy.mock.calls.map((call: any[]) => call[0])
+    expect(logCalls).toContain('🔑 Keys Found:         3')
+    // All keys resolve either directly or via one of the fallback namespaces
+    expect(logCalls).toContain('- de: [■■■■■■■■■■■■■■■■■■■■] 100% (3/3 keys)')
+    expect(processExitSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('status (primary language check)', () => {
+  let consoleLogSpy: any
+  let processExitSpy: any
+
+  // Only the primary language, so the check is isolated from secondary languages.
+  const primaryOnlyConfig: I18nextToolkitConfig = {
+    locales: ['en'],
+    extract: {
+      input: ['src/**/*.{ts,tsx}'],
+      output: 'locales/{{language}}/{{namespace}}.json',
+    },
+  }
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+    const { glob } = await import('glob')
+    vi.mocked(glob).mockImplementation(async () => {
+      return Object.keys(vol.toJSON()).filter(p => p.includes('/src/'))
+    })
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('Process exit called')
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('should exit 1 and warn when a key is used in code but absent from the primary file', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/file.ts')]: `
+        import { t } from 'i18next'
+        t('present')
+        t('keywithtypo')
+      `,
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({ present: 'Hello' }),
+    })
+
+    try {
+      await runStatus(primaryOnlyConfig)
+    } catch (e) {
+      // expected: process.exit(1) throws in the test
+    }
+
+    const logCalls = consoleLogSpy.mock.calls.map((call: any[]) => call[0])
+    expect(logCalls.some((l: string) => l.includes('Primary language "en" is missing 1 key'))).toBe(true)
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should NOT fail on empty placeholder values in the primary file', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/file.ts')]: `
+        import { t } from 'i18next'
+        t('present')
+        t('placeholder')
+      `,
+      // placeholder exists but is an empty string — a deliberate extract placeholder
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({ present: 'Hello', placeholder: '' }),
+    })
+
+    await runStatus(primaryOnlyConfig)
+
+    expect(processExitSpy).not.toHaveBeenCalled()
+  })
+
+  it('should list absent primary keys in the detailed view (status <primary>)', async () => {
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/file.ts')]: `
+        import { t } from 'i18next'
+        t('present')
+        t('keywithtypo')
+      `,
+      [resolve(process.cwd(), 'locales/en/translation.json')]: JSON.stringify({ present: 'Hello' }),
+    })
+
+    try {
+      await runStatus(primaryOnlyConfig, { detail: 'en' })
+    } catch (e) {
+      // expected: process.exit(1) throws in the test
+    }
+
+    const logCalls = consoleLogSpy.mock.calls.map((call: any[]) => call[0])
+    expect(logCalls.some((l: string) => l.includes('keywithtypo') && l.includes('(absent)'))).toBe(true)
+    expect(logCalls.some((l: string) => l.includes('used in code but absent from the "en"'))).toBe(true)
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+})
+
+describe('status (scoped pass/fail per requested locale, issue #271)', () => {
+  let consoleLogSpy: any
+  let processExitSpy: any
+
+  // Primary fully translated, secondary left as empty placeholders.
+  const config: I18nextToolkitConfig = {
+    locales: ['en-AU', 'de-DE'],
+    extract: {
+      input: ['src/**/*.{ts,tsx}'],
+      output: 'locales/{{language}}/{{namespace}}.json',
+      primaryLanguage: 'en-AU',
+      secondaryLanguages: ['de-DE'],
+    },
+  }
+
+  beforeEach(async () => {
+    vol.reset()
+    vi.clearAllMocks()
+    const { glob } = await import('glob')
+    vi.mocked(glob).mockImplementation(async () => {
+      return Object.keys(vol.toJSON()).filter(p => p.includes('/src/'))
+    })
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('Process exit called')
+    })
+
+    vol.fromJSON({
+      [resolve(process.cwd(), 'src/file.ts')]: `
+        import { t } from 'i18next'
+        t('hello')
+        t('world')
+      `,
+      // en-AU (primary) fully translated
+      [resolve(process.cwd(), 'locales/en-AU/translation.json')]: JSON.stringify({ hello: 'Hello', world: 'World' }),
+      // de-DE (secondary) empty placeholders
+      [resolve(process.cwd(), 'locales/de-DE/translation.json')]: JSON.stringify({ hello: '', world: '' }),
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('does NOT exit 1 when the requested (primary) locale is complete, even if a secondary is empty', async () => {
+    await runStatus(config, { detail: 'en-AU', hideTranslated: true })
+
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('All keys used in code are present'))
+    expect(processExitSpy).not.toHaveBeenCalled()
+  })
+
+  it('exits 1 and names the locale when the requested (secondary) locale is incomplete', async () => {
+    try {
+      await runStatus(config, { detail: 'de-DE', hideTranslated: true })
+    } catch (e) {
+      // expected: process.exit(1) throws in the test
+    }
+
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('still exits 1 in the global view when any secondary is incomplete', async () => {
+    try {
+      await runStatus(config)
+    } catch (e) {
+      // expected: process.exit(1) throws in the test
+    }
+
+    expect(processExitSpy).toHaveBeenCalledWith(1)
+  })
+})

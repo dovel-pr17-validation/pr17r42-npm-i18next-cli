@@ -1,0 +1,512 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Mock all the action handlers that cli.ts imports and calls
+const mockRunStatus = vi.fn()
+const mockRunExtractor = vi.fn()
+const mockRunSyncer = vi.fn()
+const mockRunTypesGenerator = vi.fn()
+const mockRunLinter = vi.fn()
+const mockRunInit = vi.fn()
+const mockRunMigrator = vi.fn()
+const mockRunLocizeSync = vi.fn()
+const mockRunRenameKey = vi.fn()
+const mockRunLocalize = vi.fn()
+
+// Mock the modules that contain the service functions
+vi.mock('../src/status', () => ({ runStatus: mockRunStatus }))
+vi.mock('../src/extractor', () => ({ runExtractor: mockRunExtractor }))
+vi.mock('../src/syncer', () => ({ runSyncer: mockRunSyncer }))
+vi.mock('../src/types-generator', () => ({ runTypesGenerator: mockRunTypesGenerator }))
+vi.mock('../src/linter', () => ({ runLinterCli: mockRunLinter }))
+vi.mock('../src/init', () => ({ runInit: mockRunInit }))
+vi.mock('../src/migrator', () => ({ runMigrator: mockRunMigrator }))
+vi.mock('../src/locize', () => ({ runLocizeSync: mockRunLocizeSync }))
+vi.mock('../src/rename-key', () => ({ runRenameKey: mockRunRenameKey }))
+vi.mock('../src/localize/index', () => ({ runLocalize: mockRunLocalize }))
+
+// Mock config loaders as they are a common dependency
+const mockEnsureConfig = vi.fn()
+const mockLoadConfig = vi.fn()
+vi.mock('../src/config', () => ({
+  ensureConfig: mockEnsureConfig,
+  loadConfig: mockLoadConfig,
+}))
+
+vi.mock('chokidar', () => {
+  const mockWatch = vi.fn(() => ({ on: vi.fn() }))
+  return {
+    default: { watch: mockWatch },
+    watch: mockWatch,
+  }
+})
+vi.mock('glob', () => ({ glob: vi.fn().mockResolvedValue([]) }))
+
+describe('CLI command parsing and dispatching', () => {
+  let originalArgv: string[]
+  let exitSpy: any
+
+  // A valid, minimal config to prevent crashes
+  const validMockConfig = {
+    locales: ['en'],
+    extract: {
+      input: ['src/'],
+      output: 'locales/{{language}}/{{namespace}}.json',
+    }
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    originalArgv = process.argv
+    process.argv = []
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+  })
+
+  afterEach(() => {
+    process.argv = originalArgv
+    vi.restoreAllMocks()
+  })
+
+  it('should parse the "status" command and call runStatus', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'status', 'en']
+    const config = { locales: ['en'], extract: {} }
+    mockLoadConfig.mockResolvedValue(config)
+
+    await import('../src/cli')
+
+    expect(mockRunStatus).toHaveBeenCalledTimes(1)
+    // Assert the actual two-argument call signature
+    expect(mockRunStatus).toHaveBeenCalledWith(config, { detail: 'en', namespace: undefined, hideTranslated: false })
+  })
+
+  it('should parse the "status" command with --hide-translated and call runStatus', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'status', 'en', '--hide-translated']
+    const config = { locales: ['en'], extract: {} }
+    mockLoadConfig.mockResolvedValue(config)
+
+    await import('../src/cli')
+
+    expect(mockRunStatus).toHaveBeenCalledTimes(1)
+    // Assert the actual two-argument call signature
+    expect(mockRunStatus).toHaveBeenCalledWith(config, { detail: 'en', namespace: undefined, hideTranslated: true })
+  })
+
+  it('should parse the "extract --ci" command and exit with error if files are updated', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--ci']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    // Simulate runExtractor returning `true` (files were updated)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: true, hasErrors: false })
+
+    await import('../src/cli')
+
+    // Allow async operations in the action handler to complete
+    await new Promise(resolve => setImmediate(resolve))
+
+    // Assert that the CI-specific exit code is called
+    expect(exitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should exit with code 1 when hasErrors is true even if no files were updated', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    // Simulate a run where a file failed to parse but no output files changed
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: true })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(exitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should NOT exit with code 1 when extraction succeeds with no errors', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it('should exit with code 1 when --ci flag is set and hasErrors is true even with no file updates', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--ci']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    // No files updated, but a parse error occurred
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: true })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    // CI should still fail because of the parse error
+    expect(exitSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('should parse the "sync" command and call runSyncer', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'sync']
+    mockEnsureConfig.mockResolvedValue({})
+    await import('../src/cli')
+    expect(mockRunSyncer).toHaveBeenCalledTimes(1)
+  })
+
+  it('should parse the "types" command and call runTypesGenerator', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'types']
+    mockEnsureConfig.mockResolvedValue({ types: { input: [] } })
+    await import('../src/cli')
+    expect(mockRunTypesGenerator).toHaveBeenCalledTimes(1)
+  })
+
+  it('should configure the "types --watch" watcher with awaitWriteFinish to avoid mid-write races', async () => {
+    vi.resetModules()
+    const mockWatch = (await import('chokidar')).watch as any
+    const mockGlob = (await import('glob')).glob as any
+    mockGlob.mockResolvedValue(['locales/en/translation.json'])
+
+    process.argv = ['node', 'cli.ts', 'types', '--watch']
+    mockEnsureConfig.mockResolvedValue({ extract: {}, types: { input: ['locales/en/*.json'] } })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockWatch).toHaveBeenCalledTimes(1)
+    const calledOptions = mockWatch.mock.calls[0][1]
+    expect(calledOptions).toEqual(expect.objectContaining({
+      persistent: true,
+      awaitWriteFinish: expect.objectContaining({ stabilityThreshold: expect.any(Number) }),
+    }))
+  })
+
+  it('should parse the "lint" command and call runLinter', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'lint']
+    mockLoadConfig.mockResolvedValue({ extract: { input: [] } })
+    await import('../src/cli')
+    expect(mockRunLinter).toHaveBeenCalledTimes(1)
+  })
+
+  it('should parse the "init" command and call runInit', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'init']
+    await import('../src/cli')
+    expect(mockRunInit).toHaveBeenCalledTimes(1)
+  })
+
+  it('should parse the "migrate-config" command and call runMigrator', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'migrate-config']
+    await import('../src/cli')
+    expect(mockRunMigrator).toHaveBeenCalledTimes(1)
+  })
+
+  it('should parse the "locize-sync" command with options', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'locize-sync', '--dry-run', '--update-values']
+    mockEnsureConfig.mockResolvedValue({})
+    await import('../src/cli')
+    expect(mockRunLocizeSync).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ dryRun: true, updateValues: true })
+    )
+  })
+
+  it('should forward the auto-translate options on "locize-sync"', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'locize-sync', '--auto-translate', 'true', '--auto-translate-review', 'true', '--auto-translate-languages', 'de,fr']
+    mockEnsureConfig.mockResolvedValue({})
+    await import('../src/cli')
+    expect(mockRunLocizeSync).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        autoTranslate: 'true',
+        autoTranslateReview: 'true',
+        autoTranslateLanguages: 'de,fr',
+      })
+    )
+  })
+
+  it('should parse the "localize" command and forward its options', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'localize', '--dry-run', '--skip-instrument', '--yes', '--cdn-type', 'pro']
+    await import('../src/cli')
+    expect(mockRunLocalize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dryRun: true,
+        skipInstrument: true,
+        yes: true,
+        cdnType: 'pro',
+      }),
+      undefined
+    )
+  })
+
+  it('should parse "localize --print-agent-prompt" without loading a config', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'localize', '--print-agent-prompt']
+    await import('../src/cli')
+    expect(mockRunLocalize).toHaveBeenCalledWith(
+      expect.objectContaining({ printAgentPrompt: true }),
+      undefined
+    )
+    expect(mockEnsureConfig).not.toHaveBeenCalled()
+    expect(mockLoadConfig).not.toHaveBeenCalled()
+  })
+
+  it('should parse the "extract --sync-primary" command and pass syncPrimaryWithDefaults option', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--sync-primary']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+
+    // Allow async operations in the action handler to complete
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockRunExtractor).toHaveBeenCalledWith(
+      validMockConfig,
+      expect.objectContaining({
+        isWatchMode: false,
+        isDryRun: false,
+        syncPrimaryWithDefaults: true
+      })
+    )
+  })
+
+  it('should parse the "extract --with-types" command and call runTypesGenerator when files were updated', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--with-types']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: true, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockRunTypesGenerator).toHaveBeenCalledTimes(1)
+    expect(mockRunTypesGenerator).toHaveBeenCalledWith(validMockConfig, { quiet: false })
+  })
+
+  it('should parse the "extract --with-types" command and NOT call runTypesGenerator when nothing changed', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--with-types']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockRunTypesGenerator).not.toHaveBeenCalled()
+  })
+
+  it('should parse the "extract --with-types --dry-run" command and NOT call runTypesGenerator', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--with-types', '--dry-run']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: true, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockRunTypesGenerator).not.toHaveBeenCalled()
+  })
+
+  it('should parse the "extract --sync-all --trust-derived" command and pass trustDerivedDefaults option', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--sync-all', '--trust-derived']
+
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockRunExtractor).toHaveBeenCalledWith(
+      validMockConfig,
+      expect.objectContaining({
+        isWatchMode: false,
+        isDryRun: false,
+        syncPrimaryWithDefaults: true,
+        syncAll: true,
+        trustDerivedDefaults: true
+      })
+    )
+  })
+
+  it('should honor extract.ignore when running in watch mode', async () => {
+    vi.resetModules()
+    const mockWatch = (await import('chokidar')).watch as any
+
+    process.argv = ['node', 'cli.ts', 'extract', '--watch']
+
+    const watchConfig = {
+      locales: ['en-US'],
+      extract: {
+        input: ['./src/**/*.{ts,tsx}'],
+        ignore: ['src/i18n/locales/**'],
+        output: 'src/i18n/locales/{{language}}/{{namespace}}.ts',
+      }
+    }
+
+    mockEnsureConfig.mockResolvedValue(watchConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+
+    // Allow async operations in the action handler to complete
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockWatch).toHaveBeenCalledTimes(1)
+    const [watchedPaths, calledOptions] = mockWatch.mock.calls[0]
+
+    // the base folder of the input glob is watched, so new files are picked up
+    expect(watchedPaths).toEqual(['src'])
+    expect(calledOptions).toEqual(expect.objectContaining({ ignoreInitial: true, persistent: true }))
+
+    const file = { isFile: () => true }
+    const dir = { isFile: () => false }
+    expect(calledOptions.ignored('src/app.tsx', file)).toBe(false)
+    expect(calledOptions.ignored('src/i18n/locales/en/namespace.ts', file)).toBe(true)
+    expect(calledOptions.ignored('src/styles.css', file)).toBe(true)
+    expect(calledOptions.ignored('src/node_modules/x', dir)).toBe(true)
+    expect(calledOptions.ignored('src/i18n', dir)).toBe(false)
+  })
+
+  it('watch mode should re-extract when input files are added, changed or removed', async () => {
+    vi.resetModules()
+    const mockWatch = (await import('chokidar')).watch as any
+
+    process.argv = ['node', 'cli.ts', 'extract', '--watch']
+
+    const watchConfig = {
+      locales: ['en-US'],
+      extract: {
+        input: ['src/**/*.{ts,tsx}'],
+        ignore: ['src/i18n/locales/**'],
+        output: 'src/i18n/locales/{{language}}/{{namespace}}.ts',
+      }
+    }
+
+    mockEnsureConfig.mockResolvedValue(watchConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    const watcher = mockWatch.mock.results[0].value
+    const onAll = watcher.on.mock.calls.find((c: any[]) => c[0] === 'all')[1]
+    mockRunExtractor.mockClear()
+
+    for (const event of ['add', 'change', 'unlink']) {
+      onAll(event, 'src/components/button.tsx')
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    expect(mockRunExtractor).toHaveBeenCalledTimes(3)
+
+    // generated output and non-file events do not trigger a run
+    onAll('change', 'src/i18n/locales/en/translation.ts')
+    onAll('addDir', 'src/components')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mockRunExtractor).toHaveBeenCalledTimes(3)
+  })
+
+  it('watch mode should run one extraction at a time', async () => {
+    vi.resetModules()
+    const mockWatch = (await import('chokidar')).watch as any
+
+    process.argv = ['node', 'cli.ts', 'extract', '--watch']
+    mockEnsureConfig.mockResolvedValue({
+      locales: ['en'],
+      extract: { input: ['src/**/*.ts'], output: 'locales/{{language}}/{{namespace}}.json' }
+    })
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    const onAll = mockWatch.mock.results[0].value.on.mock.calls.find((c: any[]) => c[0] === 'all')[1]
+    mockRunExtractor.mockClear()
+
+    let finish!: () => void
+    mockRunExtractor.mockImplementationOnce(() => new Promise(resolve => {
+      finish = () => resolve({ anyFileUpdated: false, hasErrors: false })
+    }))
+
+    // a burst of changes while the first run is in flight queues exactly one more run
+    for (let i = 0; i < 5; i++) onAll('change', `src/file${i}.ts`)
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mockRunExtractor).toHaveBeenCalledTimes(1)
+
+    finish()
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mockRunExtractor).toHaveBeenCalledTimes(2)
+  })
+
+  it('should forward --config to ensureConfig for extract', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '--config', './config/i18next.config.ts']
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockEnsureConfig).toHaveBeenCalledWith('./config/i18next.config.ts')
+  })
+
+  it('should forward -c to ensureConfig for extract (short flag)', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'extract', '-c', './cfg.js']
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunExtractor.mockResolvedValue({ anyFileUpdated: false, hasErrors: false })
+
+    await import('../src/cli')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mockEnsureConfig).toHaveBeenCalledWith('./cfg.js')
+  })
+
+  it('should forward --config to loadConfig for status', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'status', 'de', '--config', './custom/i18next.config.ts']
+    const config = { locales: ['en'], extract: {} }
+    mockLoadConfig.mockResolvedValue(config)
+
+    await import('../src/cli')
+
+    expect(mockRunStatus).toHaveBeenCalledTimes(1)
+    expect(mockLoadConfig).toHaveBeenCalledWith('./custom/i18next.config.ts')
+    expect(mockRunStatus).toHaveBeenCalledWith(config, { detail: 'de', namespace: undefined, hideTranslated: false })
+  })
+
+  it('should parse the "rename-key" command', async () => {
+    vi.resetModules()
+    process.argv = ['node', 'cli.ts', 'rename-key', 'old.key', 'new.key']
+    mockEnsureConfig.mockResolvedValue(validMockConfig)
+    mockRunRenameKey.mockResolvedValue({ success: true, sourceFiles: [], translationFiles: [] })
+
+    await import('../src/cli')
+
+    expect(mockRunRenameKey).toHaveBeenCalledWith(
+      validMockConfig,
+      'old.key',
+      'new.key',
+      expect.objectContaining({})
+    )
+  })
+})

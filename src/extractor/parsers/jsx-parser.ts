@@ -1,0 +1,772 @@
+import type { Expression, JSXAttribute, JSXAttributeOrSpread, JSXElement, JSXElementChild, JSXElementName, JSXExpression, ObjectExpression } from '@swc/core'
+import type { I18nextToolkitConfig } from '../../types.js'
+import { getObjectPropValue, getObjectPropValueExpression, isSimpleTemplateLiteral, usesIntervalPostProcessor } from './ast-utils.js'
+import { toMessageFormatPlaceholders } from '../../utils/message-format.js'
+import { createRequire } from 'node:module'
+import { parseSync } from '@swc/core'
+import type { JSXElementConstructor, ReactElement } from 'react'
+
+/**
+ * react-i18next — and, transitively, the user's `i18next` — is loaded lazily
+ * and defensively. The CLI only needs `nodesToString`/`getDefaults` to
+ * serialize `<Trans>` children. Importing them at module scope means an
+ * incompatible react-i18next/i18next pair in the *user's* project (e.g.
+ * react-i18next@17.0.8 importing `keyFromSelector` from an older i18next that
+ * doesn't export it) throws while this module is being evaluated, which crashes
+ * *every* CLI command. By deferring the import until a `<Trans>` is actually
+ * serialized — and tolerating a load failure — unrelated commands keep working
+ * and Trans serialization degrades gracefully. See issue #260.
+ */
+interface ReactI18nextApi {
+  getDefaults: () => Record<string, any>
+  nodesToString: (nodes: Array<string | ReactElement>, options: Record<string, any>) => string
+}
+
+let cachedReactI18next: ReactI18nextApi | null | undefined
+function loadReactI18next (): ReactI18nextApi | null {
+  if (cachedReactI18next !== undefined) return cachedReactI18next
+  try {
+    const require = createRequire(import.meta.url)
+    cachedReactI18next = require('react-i18next') as ReactI18nextApi
+  } catch {
+    cachedReactI18next = null
+  }
+  return cachedReactI18next
+}
+
+let warnedReactI18nextUnavailable = false
+function warnReactI18nextUnavailable (): void {
+  if (warnedReactI18nextUnavailable) return
+  warnedReactI18nextUnavailable = true
+  console.warn(
+    "i18next-cli: could not load 'react-i18next' to serialize <Trans> children — " +
+    'skipping their default-value extraction. This usually means the installed ' +
+    "'react-i18next' and 'i18next' versions are incompatible. Other functionality is unaffected."
+  )
+}
+
+/**
+ * Detects which `$$typeof` symbol react-i18next's `nodesToString` expects
+ * from React elements.  This matters because npm hoisting can cause
+ * `react-i18next` to resolve `react` to a *different* version than the one
+ * this package depends on (e.g. the user's React 18 vs the CLI's React 19).
+ *
+ * React 18 uses `Symbol.for('react.element')`, while React 19 uses
+ * `Symbol.for('react.transitional.element')` for its element `$$typeof`.
+ * By probing `nodesToString` we ensure the fake elements we build match its
+ * `isValidElement` check, regardless of which React it resolved to. Resolved
+ * lazily (and cached) the first time we serialize a `<Trans>`.
+ */
+let cachedReactElementType: symbol | undefined
+function resolveReactElementType (rt: ReactI18nextApi): symbol {
+  if (cachedReactElementType !== undefined) return cachedReactElementType
+  const candidates = [
+    Symbol.for('react.element'), // React ≤ 18
+    Symbol.for('react.transitional.element') // React 19
+  ]
+  const savedWarn = console.warn
+  console.warn = () => {} // suppress probe warnings
+  try {
+    for (const sym of candidates) {
+      const testEl = {
+        $$typeof: sym,
+        type: 'span',
+        props: { children: 'x' },
+        key: null,
+        ref: null
+      }
+      const result = rt.nodesToString([testEl as unknown as ReactElement], { ...rt.getDefaults() })
+      if (result === '<0>x</0>') { cachedReactElementType = sym; return sym }
+    }
+  } finally {
+    console.warn = savedWarn
+  }
+  cachedReactElementType = candidates[0]
+  return candidates[0]
+}
+
+/** `React.Fragment` equivalent – same symbol across all React versions. */
+const REACT_FRAGMENT: symbol = Symbol.for('react.fragment')
+
+/**
+ * Creates a React-element–like object whose `$$typeof` matches whichever
+ * React version `react-i18next`'s `nodesToString` uses for its
+ * `isValidElement` check.
+ */
+function createElement (
+  type: string | symbol | JSXElementConstructor<any>,
+  props: Record<string, any> | null,
+  ...children: any[]
+): ReactElement {
+  const finalProps: Record<string, any> = props ? { ...props } : {}
+  if (children.length === 1) {
+    finalProps.children = children[0]
+  } else if (children.length > 1) {
+    finalProps.children = children
+  }
+  return {
+    // serializeJSXChildren() resolves and caches this before any element is
+    // built; the fallback only applies if createElement is ever reached first.
+    $$typeof: cachedReactElementType ?? Symbol.for('react.transitional.element'),
+    type,
+    props: finalProps,
+    key: null,
+    ref: null
+  } as unknown as ReactElement
+}
+
+export interface ExtractedJSXAttributes {
+  /** holds the raw key expression from the AST */
+  keyExpression?: Expression;
+
+  /** holds the serialized JSX children from the AST */
+  serializedChildren: string;
+
+  /** Default value to use in the primary language */
+  defaultValue?: string;
+
+  /** Namespace this key belongs to (if defined on <Trans />) */
+  ns?: string;
+
+  /** Whether this key is used with pluralization (count parameter) */
+  hasCount?: boolean;
+
+  /** Whether this key is used with ordinal pluralization */
+  isOrdinal?: boolean;
+
+  /** AST node for options object, used for advanced plural handling in Trans */
+  optionsNode?: ObjectExpression;
+
+  /** hold the raw context expression from the AST */
+  contextExpression?: Expression;
+
+  /** Whether the defaultValue was explicitly provided on the <Trans /> (defaults prop or tOptions defaultValue*) */
+  explicitDefault?: boolean;
+}
+
+function getStringLiteralFromExpression (expression: JSXExpression | null): string | undefined {
+  if (!expression) return undefined
+
+  if (expression.type === 'StringLiteral') {
+    return expression.value
+  }
+
+  if (expression.type === 'TemplateLiteral' && isSimpleTemplateLiteral(expression)) {
+    return expression.quasis[0].cooked
+  }
+
+  return undefined
+}
+
+function getStringLiteralFromAttribute (attr: JSXAttribute): string | undefined {
+  if (attr.value?.type === 'StringLiteral') {
+    return attr.value.value
+  }
+
+  if (attr.value?.type === 'JSXExpressionContainer') {
+    return getStringLiteralFromExpression(attr.value.expression)
+  }
+
+  return undefined
+}
+
+/**
+ * Extracts translation keys from JSX Trans components.
+ *
+ * This function handles various Trans component patterns:
+ * - Explicit i18nKey prop: `<Trans i18nKey="my.key">content</Trans>`
+ * - Implicit keys from children: `<Trans>Hello World</Trans>`
+ * - Namespace specification: `<Trans ns="common">content</Trans>`
+ * - Default values: `<Trans defaults="Default text">content</Trans>`
+ * - Pluralization: `<Trans count={count}>content</Trans>`
+ * - HTML preservation: `<Trans>Hello <strong>world</strong></Trans>`
+ *
+ * @param node - The JSX element node to process
+ * @param config - The toolkit configuration containing extraction settings
+ * @returns Extracted key information or null if no valid key found
+ *
+ * @example
+ * ```typescript
+ * // Input JSX:
+ * // <Trans i18nKey="welcome.title" ns="home" defaults="Welcome!">
+ * //   Welcome to our <strong>amazing</strong> app!
+ * // </Trans>
+ *
+ * const result = extractFromTransComponent(jsxNode, config)
+ * // Returns: {
+ * //   key: 'welcome.title',
+ * //   keyExpression: { ... },
+ * //   ns: 'home',
+ * //   defaultValue: 'Welcome!',
+ * //   hasCount: false
+ * // }
+ * ```
+ */
+export function extractFromTransComponent (node: JSXElement, config: I18nextToolkitConfig): ExtractedJSXAttributes | null {
+  const i18nKeyAttr = node.opening.attributes?.find(
+    (attr) =>
+      attr.type === 'JSXAttribute' &&
+      attr.name.type === 'Identifier' &&
+      attr.name.value === 'i18nKey'
+  )
+
+  const defaultsAttr = node.opening.attributes?.find(
+    (attr) =>
+      attr.type === 'JSXAttribute' &&
+      attr.name.type === 'Identifier' &&
+      attr.name.value === 'defaults'
+  )
+
+  const countAttr = node.opening.attributes?.find(
+    (attr) =>
+      attr.type === 'JSXAttribute' &&
+      attr.name.type === 'Identifier' &&
+      attr.name.value === 'count'
+  )
+
+  const valuesAttr = node.opening.attributes?.find(
+    (attr) => attr.type === 'JSXAttribute' && attr.name.type === 'Identifier' && attr.name.value === 'values'
+  )
+
+  // Find the 'count' property in the 'values' object if count={...} is not defined
+  let valuesCountProperty: Expression | undefined
+  if (
+    !countAttr &&
+    valuesAttr?.type === 'JSXAttribute' &&
+    valuesAttr.value?.type === 'JSXExpressionContainer' &&
+    valuesAttr.value.expression.type === 'ObjectExpression'
+  ) {
+    valuesCountProperty = getObjectPropValueExpression(valuesAttr.value.expression, 'count')
+  }
+
+  // Mirror react-i18next v16.4.0: infer count from inline {{ count }} children
+  // when no explicit `count` prop or `values={{ count }}` is present.
+  // The runtime check is `typeof valuesFromChildren.count === 'number'`; at
+  // extraction time we can only inspect the AST shape, so we look for any
+  // ObjectExpression interpolation that declares a `count` key.
+  const hasInlineCount = !countAttr && !valuesCountProperty && childrenHaveInlineCount(node.children)
+
+  const tOptionsAttr = node.opening.attributes?.find(
+    (attr) =>
+      attr.type === 'JSXAttribute' &&
+      attr.name.type === 'Identifier' &&
+      attr.name.value === 'tOptions'
+  )
+  const optionsNode = (tOptionsAttr?.type === 'JSXAttribute' && tOptionsAttr.value?.type === 'JSXExpressionContainer' && tOptionsAttr.value.expression.type === 'ObjectExpression')
+    ? tOptionsAttr.value.expression
+    : undefined
+
+  const hasCount = (!!countAttr || !!valuesCountProperty || hasInlineCount) && !usesIntervalPostProcessor(optionsNode)
+
+  // Find isOrdinal prop on the <Trans> component
+  const ordinalAttr = node.opening.attributes?.find(
+    (attr) =>
+      attr.type === 'JSXAttribute' &&
+            attr.name.type === 'Identifier' &&
+            attr.name.value === 'ordinal'
+  )
+  const isOrdinal = !!ordinalAttr
+
+  const contextAttr = node.opening.attributes?.find(
+    (attr) =>
+      attr.type === 'JSXAttribute' &&
+        attr.name.type === 'Identifier' &&
+        attr.name.value === 'context'
+  )
+  let contextExpression = (contextAttr?.type === 'JSXAttribute' && contextAttr.value?.type === 'JSXExpressionContainer')
+    ? contextAttr.value.expression
+    : (contextAttr?.type === 'JSXAttribute' && contextAttr.value?.type === 'StringLiteral')
+        ? contextAttr.value
+        : undefined
+
+  // 1. Prioritize direct props for 'ns' and 'context'
+  const nsAttr = node.opening.attributes?.find(attr => attr.type === 'JSXAttribute' && attr.name.type === 'Identifier' && attr.name.value === 'ns')
+  let ns: string | undefined
+  if (nsAttr?.type === 'JSXAttribute') {
+    ns = getStringLiteralFromAttribute(nsAttr)
+  } else {
+    ns = undefined
+  }
+
+  // 2. If not found, fall back to looking inside tOptions
+  if (optionsNode) {
+    if (ns === undefined) {
+      ns = getObjectPropValue(optionsNode, 'ns') as string | undefined
+    }
+    if (contextExpression === undefined) {
+      contextExpression = getObjectPropValueExpression(optionsNode, 'context')
+    }
+  }
+
+  const serialized = serializeJSXChildren(node.children, config)
+
+  // Handle default value properly
+  let defaultValue: string
+
+  const defaultAttributeLiteral = defaultsAttr?.type === 'JSXAttribute' ? getStringLiteralFromAttribute(defaultsAttr) : undefined
+  if (defaultAttributeLiteral !== undefined) {
+    // Explicit defaults attribute takes precedence
+    defaultValue = defaultAttributeLiteral
+  } else {
+    // Use the configured default value or fall back to empty string
+    const configuredDefault = config.extract.defaultValue
+    if (typeof configuredDefault === 'string') {
+      defaultValue = configuredDefault
+    } else {
+      // For function-based defaults or undefined, use empty string as placeholder
+      // The translation manager will handle function resolution with proper context
+      defaultValue = ''
+    }
+  }
+
+  let keyExpression: Expression | undefined
+  let processedKeyValue: string | undefined
+
+  if (i18nKeyAttr?.type === 'JSXAttribute') {
+    if (i18nKeyAttr.value?.type === 'StringLiteral') {
+      keyExpression = i18nKeyAttr.value
+      processedKeyValue = keyExpression.value
+
+      // Validate that the key is not empty
+      if (!processedKeyValue || processedKeyValue.trim() === '') {
+        return null
+      }
+
+      // Handle namespace prefix removal when both ns and i18nKey are provided
+      if (ns && keyExpression.type === 'StringLiteral') {
+        const nsSeparator = config.extract.nsSeparator ?? ':'
+        const keyValue = keyExpression.value
+
+        // If the key starts with the namespace followed by the separator, remove the prefix
+        if (nsSeparator && keyValue.startsWith(`${ns}${nsSeparator}`)) {
+          processedKeyValue = keyValue.slice(`${ns}${nsSeparator}`.length)
+
+          // Validate processed key is not empty
+          if (!processedKeyValue || processedKeyValue.trim() === '') {
+            return null
+          }
+
+          // Create a new StringLiteral with the namespace prefix removed
+          keyExpression = {
+            ...keyExpression,
+            value: processedKeyValue
+          }
+        }
+      }
+    } else if (
+      i18nKeyAttr.value?.type === 'JSXExpressionContainer' &&
+      i18nKeyAttr.value.expression.type !== 'JSXEmptyExpression'
+    ) {
+      keyExpression = i18nKeyAttr.value.expression
+    }
+
+    if (!keyExpression) return null
+  }
+
+  if (!keyExpression && !serialized.trim()) return null
+
+  // If no explicit defaults provided and we have a processed key, use it as default value
+  // This matches the behavior of other similar tests in the codebase
+  if (!defaultsAttr && processedKeyValue && !serialized.trim()) {
+    defaultValue = processedKeyValue
+  } else if (!defaultsAttr && serialized.trim()) {
+    // react-i18next serializes interpolation objects as {{name}}; ICU and MF2 values need {name} / {$name}
+    defaultValue = toMessageFormatPlaceholders(serialized, config)
+  }
+
+  // Determine if tOptions contained explicit defaultValue* properties
+  const optionsHasDefaultProps = (opts?: ObjectExpression) => {
+    if (!opts || !Array.isArray((opts as any).properties)) return false
+    for (const p of (opts as any).properties) {
+      if (p && p.type === 'KeyValueProperty' && p.key) {
+        const keyName = (p.key.type === 'Identifier' && p.key.value) || (p.key.type === 'StringLiteral' && p.key.value)
+        if (typeof keyName === 'string' && keyName.startsWith('defaultValue')) return true
+      }
+    }
+    return false
+  }
+
+  const explicitDefault = defaultAttributeLiteral !== undefined || optionsHasDefaultProps(optionsNode)
+
+  return {
+    keyExpression,
+    serializedChildren: serialized,
+    ns,
+    defaultValue,
+    hasCount,
+    isOrdinal,
+    contextExpression,
+    optionsNode,
+    explicitDefault
+  }
+}
+
+function findAttribute (node: JSXElement, name: string): JSXAttribute | undefined {
+  return node.opening.attributes?.find((attr): attr is JSXAttribute =>
+    attr.type === 'JSXAttribute' && attr.name.type === 'Identifier' && attr.name.value === name)
+}
+
+// The `i18nKey` of an IcuTrans or icu.macro component, undefined when there is none (the message is the key then)
+function getKeyExpression (node: JSXElement): Expression | undefined {
+  const attr = findAttribute(node, 'i18nKey')
+  if (attr?.value?.type === 'StringLiteral') return attr.value.value.trim() ? attr.value : undefined
+  if (attr?.value?.type === 'JSXExpressionContainer' && attr.value.expression.type !== 'JSXEmptyExpression') return attr.value.expression
+  return undefined
+}
+
+/**
+ * Extracts react-i18next's `<IcuTrans i18nKey="invite" defaultTranslation="We invited <0>{user}</0>." />`.
+ * Like IcuTrans at runtime, the key is `i18nKey`, or `defaultTranslation` when there is none.
+ */
+export function extractFromIcuTrans (node: JSXElement): ExtractedJSXAttributes | null {
+  const defaultAttr = findAttribute(node, 'defaultTranslation')
+  const defaultTranslation = (defaultAttr && getStringLiteralFromAttribute(defaultAttr)) ?? ''
+  const keyExpression = getKeyExpression(node)
+  if (!keyExpression && !defaultTranslation.trim()) return null
+  const nsAttr = findAttribute(node, 'ns')
+  return {
+    keyExpression,
+    serializedChildren: defaultTranslation,
+    defaultValue: defaultTranslation,
+    ns: nsAttr && getStringLiteralFromAttribute(nsAttr),
+    explicitDefault: !!defaultTranslation,
+  }
+}
+
+export type IcuMacroComponent = 'Trans' | 'Plural' | 'Select' | 'SelectOrdinal'
+
+/**
+ * Extracts the components of `react-i18next/icu.macro`. The macro compiles them to IcuTrans with a
+ * `defaultTranslation` it builds from the children or props, and that is the key when there is no
+ * `i18nKey`, so the message is built exactly like the macro does (quirks included):
+ *
+ * - `<Trans>Welcome, <strong>{name}</strong>!</Trans>` → `Welcome, <0>{name}</0>!`
+ * - `<Plural count={count} one="# item" other="# items" />` → `{count, plural,  one {# item} other {# items}}`
+ * - `<Select switch={gender} male="He" other="They" />` → `{gender, select,  male {He} other {They}}`
+ */
+export function extractFromIcuMacro (node: JSXElement, component: IcuMacroComponent): ExtractedJSXAttributes | null {
+  let message: string
+  let ns: string | undefined
+  if (component === 'Trans') {
+    const defaultsAttr = findAttribute(node, 'defaults')
+    const defaults = defaultsAttr && getStringLiteralFromAttribute(defaultsAttr)
+    // the macro parses `defaults` as JSX children, unless `content` or `components` is set
+    // (then it builds an empty message from the children it no longer has)
+    const children = defaults === undefined
+      ? node.children
+      : findAttribute(node, 'content') || findAttribute(node, 'components')
+        ? []
+        : (parseSync(`<>${defaults}</>`, { syntax: 'ecmascript', jsx: true }).body[0] as any).expression.children
+    message = mergeMacroChildren(children, 0).text
+    const nsAttr = findAttribute(node, 'ns')
+    ns = nsAttr && getStringLiteralFromAttribute(nsAttr)
+  } else {
+    // Plural, Select and SelectOrdinal do not pass `ns` on (the macro would make it a case)
+    message = buildMacroChoice(node, component)
+  }
+  const keyExpression = getKeyExpression(node)
+  if (!keyExpression && !message.trim()) return null
+  return { keyExpression, serializedChildren: message, defaultValue: message, ns }
+}
+
+// Port of icu.macro's mergeChildren: text, {name}, {name, number}, tagged templates, and <N>…</N>
+// for every element, numbered per nesting level. Fragments and other expressions are dropped.
+function mergeMacroChildren (children: JSXElementChild[], start: number): { text: string, next: number } {
+  let index = start
+  let text = ''
+  for (const child of children) {
+    if (child.type === 'JSXText') {
+      text += child.value.replace(/^\n\s+/, '').replace(/\n\s+$/, '')
+    } else if (child.type === 'JSXElement') {
+      text += `<${index}>${mergeMacroChildren(child.children, 0).text}</${index}>`
+      index++
+    } else if (child.type === 'JSXExpressionContainer') {
+      const expr: any = child.expression
+      if ((expr.type === 'StringLiteral' || expr.type === 'NumericLiteral' || expr.type === 'BooleanLiteral') && expr.value) {
+        text += String(expr.value)
+      } else if (expr.type === 'Identifier') {
+        text += `{${expr.value}}`
+      } else if (expr.type === 'SequenceExpression') {
+        text += `{${expr.expressions.map((e: any) => e.value ?? '').join(', ')}}`
+      } else if (expr.type === 'TaggedTemplateExpression') {
+        const merged = mergeMacroTemplate(expr, index)
+        text += merged.text
+        index = merged.next
+      }
+    }
+  }
+  return { text, next: index }
+}
+
+// Port of icu.macro's tagged templates: number`${n}` → {n, number}, plural`${count}, one {…} other {…}` → {count, plural, …}
+function mergeMacroTemplate (node: any, start: number): { text: string, next: number } {
+  const type = node.tag.type === 'Identifier' ? node.tag.value : 'unknown'
+  const { quasis, expressions } = node.template
+  let index = start
+  let text = ''
+  quasis.forEach((quasi: any, i: number) => {
+    text += (quasi.cooked ?? '').replace(/\s+/g, ' ')
+    const expr = expressions[i]
+    if (!expr) return
+    if (expr.type === 'Identifier') {
+      text += `${expr.value}, ${type}`
+    } else if (expr.type === 'JSXElement') {
+      text += `<${index}>${mergeMacroChildren(expr.children, 0).text}</${index}>`
+      index++
+    } else if (expr.type === 'TaggedTemplateExpression') {
+      const merged = mergeMacroTemplate(expr, index)
+      text += merged.text
+      index = merged.next
+    }
+  })
+  return { text: `{${text}}`, next: index }
+}
+
+// Port of icu.macro's pluralAsJSX / selectAsJSX
+function buildMacroChoice (node: JSXElement, component: Exclude<IcuMacroComponent, 'Trans'>): string {
+  const type = component === 'Select' ? 'select' : component.toLowerCase()
+  const switchProp = component === 'Select' ? 'switch' : 'count'
+  let message = ''
+  let index = 0
+  for (const attr of node.opening.attributes ?? []) {
+    if (attr.type !== 'JSXAttribute' || attr.name.type !== 'Identifier') continue
+    const name = attr.name.value
+    if (name === 'i18nKey' || name === 'values') continue
+    const selector = component !== 'Select' && name.startsWith('$') ? `=${name.slice(1)}` : name
+    if (name === switchProp) {
+      const expr = attr.value?.type === 'JSXExpressionContainer' ? attr.value.expression : undefined
+      const arg = expr?.type === 'Identifier' ? expr.value : component === 'Select' ? 'selectKey' : 'count'
+      message = `{${arg}, ${type}, ${message}`
+    } else if (attr.value?.type === 'StringLiteral') {
+      message = `${message} ${selector} {${attr.value.value}}`
+    } else if (attr.value?.type === 'JSXExpressionContainer') {
+      const expr = attr.value.expression
+      const merged = mergeMacroChildren(expr.type === 'JSXElement' || expr.type === 'JSXFragment' ? expr.children : [], index)
+      message = `${message} ${selector} {${merged.text}}`
+      index = merged.next
+    }
+  }
+  return `${message}}`
+}
+
+/**
+ * Creates a dummy React component. The implementation / return value is
+ * irrelevant, as long as we have something realistic-looking to pass to
+ * react-i18next.
+ */
+function makeDummyComponent (name: string): JSXElementConstructor<any> {
+  const result = () => null
+  Object.defineProperty(result, 'name', { value: name })
+  result.displayName = name
+  return result
+}
+
+function makeDummyProps (attributes: JSXAttributeOrSpread[]): Record<string, any> | null {
+  return attributes.length
+    ? Object.fromEntries(attributes.map((attr): ([string, string] | null) => {
+      if (attr.type === 'SpreadElement') {
+        return null
+      } else if (attr.name.type === 'Identifier') {
+        return [attr.name.value, '']
+      } else {
+        return [`${attr.name.namespace.value}:${attr.name.name.value}`, '']
+      }
+    }).filter(i => i != null))
+    : null
+}
+
+function getElementName (element: JSXElementName): string | JSXElementConstructor<any> {
+  switch (element.type) {
+    case 'Identifier':
+      return /\p{Uppercase_Letter}/u.test(element.value) ? makeDummyComponent(element.value) : element.value
+    case 'JSXMemberExpression':
+      // element.object should be irrelevant for naming purposes here
+      return makeDummyComponent(element.property.value)
+    case 'JSXNamespacedName':
+      return `${element.namespace.value}:${element.name.value}`
+  }
+}
+
+function trimTextNode (text: string): string | null {
+  text = text.replace(/\r\n/g, '\n') // Normalize line endings
+
+  // If text is ONLY whitespace AND contains a newline, remove it entirely
+  if (/^\s+$/.test(text) && /\n/.test(text)) {
+    return null
+  }
+
+  // Trim leading/trailing whitespace sequences containing newlines
+  text = text.replace(/^[ \t]*\n[ \t]*/, '')
+  text = text.replace(/[ \t]*\n[ \t]*$/, '')
+
+  // Replace whitespace sequences containing newlines with single space
+  text = text.replace(/[ \t]*\n[ \t]*/g, ' ')
+
+  return text
+}
+
+function swcExpressionToReactNode (expr: JSXExpression): string | ReactElement | null {
+  switch (expr.type) {
+    case 'JSXEmptyExpression':
+      return null
+
+    case 'TsAsExpression':
+      return swcExpressionToReactNode(expr.expression)
+    case 'ParenthesisExpression':
+      return swcExpressionToReactNode(expr.expression)
+
+    case 'ConditionalExpression': {
+      const consequent = swcExpressionToReactNode(expr.consequent)
+      const alternate = swcExpressionToReactNode(expr.alternate)
+
+      // Heuristic:
+      // - If one branch is a strict prefix of the other, pick the longer (keeps extra static tail),
+      //   e.g. "to select" vs "to select, or right click..."
+      // - Otherwise, stay deterministic and prefer consequent (avoids choosing alternates just because they’re 1 char longer).
+      if (typeof consequent === 'string' &&
+          typeof alternate === 'string' &&
+          alternate.length !== consequent.length &&
+          alternate.startsWith(consequent)) {
+        return alternate
+      }
+
+      return consequent
+    }
+
+    case 'StringLiteral':
+      return expr.value
+    case 'TemplateLiteral':
+      if (isSimpleTemplateLiteral(expr)) {
+        return expr.quasis[0].raw
+      }
+      // Too complex!
+      break
+    case 'Identifier':
+      // Not a valid React element, but props for Trans interpolation
+      // TODO: This might actually be an error - not sure that react-i18next can handle at runtime
+      return { [expr.value]: expr.value } as unknown as ReactElement
+    case 'ObjectExpression': {
+      const keys = expr.properties.map((prop) => {
+        if (prop.type === 'KeyValueProperty' && (prop.key.type === 'Identifier' || prop.key.type === 'StringLiteral')) {
+          return prop.key.value
+        } else if (prop.type === 'Identifier') {
+          return prop.value
+        } else {
+        // Too complex to represent! TODO: Flag an error
+          return null
+        }
+      }).filter(k => k !== null)
+      // Not a valid React element, but props for Trans interpolation
+      return Object.fromEntries(keys.map(k => [k, k])) as unknown as ReactElement
+    }
+  }
+
+  // Too complex to represent! TODO: Flag an error
+  return createElement('expression', { expression: expr })
+}
+
+function swcChildToReactNode (node: JSXElementChild): string | ReactElement | null {
+  switch (node.type) {
+    case 'JSXText':
+      return trimTextNode(node.value)
+    case 'JSXExpressionContainer':
+      return swcExpressionToReactNode(node.expression)
+    case 'JSXSpreadChild':
+      return ''
+    case 'JSXElement':
+      return createElement(
+        getElementName(node.opening.name),
+        makeDummyProps(node.opening.attributes),
+        ...swcChildrenToReactNodes(node.children)
+      )
+    case 'JSXFragment':
+      return createElement(REACT_FRAGMENT, null, ...swcChildrenToReactNodes(node.children))
+  }
+}
+
+function swcChildrenToReactNodes (children: JSXElementChild[]): (string | ReactElement)[] {
+  return children.map(swcChildToReactNode).filter(n => n !== null)
+}
+
+/**
+ * Unwraps TypeScript type-assertion and parenthesis wrappers from a JSX
+ * expression so callers can inspect the underlying node type.
+ *
+ * Handles:
+ *   `{{ count } as any}`          → TsAsExpression wrapping ObjectExpression
+ *   `{{ count } as TransInterpolation}` → same
+ *   `({{ count }})`               → ParenthesisExpression wrapping ObjectExpression
+ */
+function unwrapJSXExpression (expr: JSXExpression): JSXExpression {
+  if (expr.type === 'TsAsExpression' || expr.type === 'TsSatisfiesExpression') {
+    return unwrapJSXExpression(expr.expression as JSXExpression)
+  }
+  if (expr.type === 'ParenthesisExpression') {
+    return unwrapJSXExpression(expr.expression as JSXExpression)
+  }
+  return expr
+}
+
+/**
+ * Recursively walks JSX children to determine whether any interpolation
+ * object contains a `count` property — mirroring the runtime behaviour of
+ * react-i18next v16.4.0's `getValuesFromChildren`.
+ *
+ * This lets the extractor infer `hasCount = true` when a `{{ count }}`
+ * (or `{{ count: expr }}`) interpolation is present in children without an
+ * explicit `count` prop on the `<Trans>` component.
+ *
+ * Matches:
+ *   `{{ count }}`               — shorthand Identifier  (prop.type === 'Identifier')
+ *   `{{ count: someExpr }}`     — KeyValueProperty with Identifier key
+ *   `{{ count } as any}`        — TsAsExpression-wrapped ObjectExpression
+ *   Deeply nested in child JSX elements (e.g. `<strong>{{ count }}</strong>`)
+ *
+ * @param children - The JSX children array to search
+ * @returns `true` when a `count` interpolation is found anywhere in the tree
+ */
+function childrenHaveInlineCount (children: JSXElementChild[]): boolean {
+  for (const child of children) {
+    if (child.type === 'JSXExpressionContainer') {
+      const inner = unwrapJSXExpression(child.expression)
+      if (inner.type === 'ObjectExpression') {
+        const hasCount = inner.properties.some(prop => {
+          if (prop.type === 'KeyValueProperty') {
+            // { count: expr }
+            return (
+              (prop.key.type === 'Identifier' || prop.key.type === 'StringLiteral') &&
+              prop.key.value === 'count'
+            )
+          }
+          if (prop.type === 'Identifier') {
+            // shorthand { count }
+            return prop.value === 'count'
+          }
+          return false
+        })
+        if (hasCount) return true
+      }
+    } else if (child.type === 'JSXElement') {
+      if (childrenHaveInlineCount(child.children)) return true
+    } else if (child.type === 'JSXFragment') {
+      if (childrenHaveInlineCount(child.children)) return true
+    }
+  }
+  return false
+}
+
+function serializeJSXChildren (children: JSXElementChild[], config: I18nextToolkitConfig): string {
+  const rt = loadReactI18next()
+  if (!rt) {
+    warnReactI18nextUnavailable()
+    return ''
+  }
+  // Resolve the element `$$typeof` before swcChildrenToReactNodes() builds any
+  // elements via createElement().
+  resolveReactElementType(rt)
+  const i18nextOptions = { ...rt.getDefaults() }
+  if (config.extract.transKeepBasicHtmlNodesFor) {
+    i18nextOptions.transKeepBasicHtmlNodesFor = config.extract.transKeepBasicHtmlNodesFor
+  }
+  return rt.nodesToString(swcChildrenToReactNodes(children), i18nextOptions)
+}

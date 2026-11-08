@@ -1,0 +1,2651 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## 1.87.0
+
+- chore: depends on i18next 27 and react-i18next 18 (`^27.0.0`, `^18.0.0`). The cli loads react-i18next
+  only to build `<Trans>` keys with its `nodesToString`, whose output is the same in 18, so extracted
+  keys do not change. Projects on i18next 26 or react-i18next 17 keep working: npm installs the cli's
+  own copies next to theirs.
+- fix(instrument): the generated i18next init file for i18next-fs-backend sets `initAsync: false`
+  instead of `initImmediate: false`, an option i18next 26 removed, so it was ignored.
+- fix(instrument): the comment on `returnEmptyString: false` in the generated init file said the
+  opposite of what the option does. It now says that an empty translation falls back, which is the
+  default since i18next 27.
+
+## 1.86.0
+
+- feat: new `extract.omitMissingKeys` (`true` or a list of languages): `extract` and `sync` leave keys
+  that are missing in those secondary languages out of their files instead of writing `defaultValue`
+  (`""`), so i18next falls back to `fallbackLng` at runtime, also where `returnEmptyString: false`
+  can't be set or translators treat an empty string as done. Existing translations stay, unused keys
+  are still removed, and `status` still counts the omitted keys as missing.
+  ([#328](https://github.com/i18next/i18next-cli/pull/328), thanks [@BenjaminVanRyseghem](https://github.com/BenjaminVanRyseghem)).
+
+## 1.85.1
+
+- fix(extractor): names imported through a barrel's `index` file (1.85.0,
+  [#327](https://github.com/i18next/i18next-cli/issues/327)) also resolve on Windows, where the
+  import path kept its backslashes and never matched the `index` file.
+
+## 1.85.0
+
+- fix(extractor): a type, enum or constant imported through a barrel file (`export * from './abc'`,
+  `export { ABC } from './abc'`, `import { ABC } from './abc'; export { ABC }`, also through a namespace
+  import `import * as Types from './types'`) resolves to the declaration the barrel re-exports, instead of
+  to whichever scanned file declared that name last.
+- fix(extractor): a name a file declares itself (a type, interface, enum or function, like variables since
+  [#307](https://github.com/i18next/i18next-cli/issues/307)), or imports from a scanned file that declares
+  it, no longer resolves to another file's same-named declaration, also when the extractor cannot read its
+  values (`interface Props { size: string }`).
+- fix(extractor): `useTranslation(NS)` and `{ ns: NS }` read `NS` from the file it is imported from. A file
+  whose own `NS` the extractor cannot read (`const NS = getNs()`) no longer takes another file's `NS`, so its
+  keys go to the default namespace.
+- feat(extractor): new `extract.warnOnAmbiguousTypes` (`true` / `'warn'` / `'error'`, default `false`):
+  warns, or aborts extraction, when the extractor has to guess which of several differently declared
+  same-named types, enums or constants a file means.
+  Fixes [#327](https://github.com/i18next/i18next-cli/issues/327)
+
+## 1.84.0
+
+- feat: plugins' `afterSync` gets a third argument `{ isDryRun }`, true for `extract --dry-run` and
+  `runExtractor(config, { isDryRun: true })`, so a plugin that writes files can skip that on a dry run.
+  Fixes [#326](https://github.com/i18next/i18next-cli/issues/326)
+
+## 1.83.0
+
+- feat: `extract.ignoreNamespaces` accepts glob patterns like `status.ignoreKeys` does, so `['dev.*', 'test.*']`
+  ignores every `dev.` and `test.` namespace in `extract`, `status`, `sync` and `lint`. `*` matches any characters.
+  Fixes [#325](https://github.com/i18next/i18next-cli/issues/325)
+
+## 1.82.5
+
+- fix: with an `extract.output` that puts the namespace in a folder, like `locales/{{namespace}}/{{language}}.json`,
+  `lint`, `sync`, `extract` and `rename-key` now read the namespace from where the template has it instead of from the
+  file name, which there is the language. `lint` checked no ICU/MF2 message at all, `sync` wrote the secondary languages
+  to `locales/en/de.json` instead of `locales/common/de.json`, and `rename-key` missed calls like
+  `t('hello', { ns: 'common' })`. `sync` and `lint` also read a namespace with a dot, like `app.settings.json`, whole.
+  Fixes [#324](https://github.com/i18next/i18next-cli/issues/324).
+
+## 1.82.4
+
+- fix(extract): a `t()` call with `postProcess: 'interval'` (i18next-intervalPlural-postProcessor) is extracted as a
+  plain key, without plural keys. There `count` picks the interval, and the extracted `helperText_interval_one`/`_other`
+  keys broke it at runtime, because i18next finds them before the interval key. The same for `postProcess: ['interval']`
+  and for `<Trans count={n} tOptions={{ postProcess: 'interval' }}>`.
+  Fixes [i18next-intervalPlural-postProcessor#229](https://github.com/i18next/i18next-intervalPlural-postProcessor/issues/229).
+
+## 1.82.3
+
+- fix(lint): `lint.checkInterpolationParams` no longer reports `formatParams` as a parameter that is not used in the
+  translation string. It is the i18next option that passes per-value options to a formatter, as in
+  `t('date', { val, formatParams: { val: { month: 'long' } } })` with `"{{val, datetime}}"`. The check missed it since it
+  was added, and since 1.81.0 it also shows up for keys in nested translation files.
+  Fixes [#323](https://github.com/i18next/i18next-cli/issues/323).
+
+## 1.82.2
+
+- fix(extract): a key kept through `preservePatterns` (or a preserved plural form or context variant) keeps the shape it
+  has in the translation file. A nested key with an empty segment like `{ "gearTypes": { "": "Unknown" } }` was rewritten
+  as a flat `"gearTypes."` key, and a nested natural-language key like `{ "Hello world": { "x": "…" } }` as a flat
+  `"Hello world.x"`. Keys extracted from code are stored as before. Fixes
+  [#319](https://github.com/i18next/i18next-cli/issues/319) ([#321](https://github.com/i18next/i18next-cli/pull/321),
+  thanks [@j8seangel](https://github.com/j8seangel)).
+- fix(extract): `extract --watch` watches the base folder of each `extract.input` glob instead of the files that existed
+  at startup, and also reacts to added and deleted files: a new file is extracted, and the keys of a deleted one are
+  removed (with `removeUnusedKeys`). One extraction runs at a time, and changes during a run lead to exactly one more
+  run, so a branch switch no longer starts hundreds of extractions that race on the output files. Errors in a watch run
+  are logged instead of left unhandled. Fixes [#320](https://github.com/i18next/i18next-cli/issues/320)
+  ([#322](https://github.com/i18next/i18next-cli/pull/322), thanks [@j8seangel](https://github.com/j8seangel)).
+- chore(deps): minimatch 11, i18next 26.7.1, react-i18next 17.1.11 and other dependency updates.
+
+## 1.82.1
+
+- chore(deps): glob 14 (`^14.0.3`), which fixes [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4):
+  in glob 9.0.0 to 14.0.1 a walk cancelled through `signal` kept reading directories in the background. i18next-cli
+  never cancels a glob walk, so it was not affected, but `npm audit` and Dependabot reported it.
+  Fixes [#318](https://github.com/i18next/i18next-cli/issues/318).
+
+## 1.82.0
+
+- feat(lint): `lint.defaultVariables` lists the variables that i18next's `interpolation.defaultVariables` fills in at
+  runtime, e.g. `defaultVariables: ['appName']`. `lint.checkInterpolationParams` no longer reports them as not provided
+  in `t()` calls (string keys, selector calls, ICU and MF2 messages), the lint counterpart of the `defaultVariables`
+  type option of i18next 26.7.0. A dotted placeholder like `{{user.name}}` counts when its root `user` is listed.
+  Passing a listed variable explicitly stays allowed, and the unused-parameter check is unchanged.
+
+## 1.81.0
+
+- feat(lint): `lint.checkInterpolationParams` now also checks selector calls like `t($ => $.user.greeting, { name })`.
+  The key comes from the extractor, so a `keyPrefix` from `useTranslation` or the call options applies. Nested translation
+  files are read as nested keys now, so `t('user.greeting', { name })` against `{ "user": { "greeting": "…" } }` is
+  checked too.
+
+## 1.80.7
+
+- fix(extract): `keyof typeof MAP` and `Object.keys(MAP)` now yield all keys of the object, also when its values are
+  objects or arrays. Only keys with a string value were recorded, so a registry like
+  `const CONTENT = { social_planner: { image: 'a.webp' } } as const` with `` t(`addons.${name}.heading`) `` and
+  `name: keyof typeof CONTENT` extracted nothing, in the same file or imported, and a map that mixes string and object
+  values only yielded its string-valued keys. Value lookups like `t(MAP[k])` still only use the string values.
+  Fixes [#317](https://github.com/i18next/i18next-cli/issues/317).
+
+## 1.80.6
+
+- fix(extract): a function parameter no longer resolves to a variable of the same name declared elsewhere.
+  `const getLabel = (options, value, t) => t(options[value])` extracted `GET` as a key because another file had a
+  `const options = { method: 'GET' }`. Inside a function, its parameters now hide same-named variables, object maps,
+  enums, functions and string constants from the module, other functions and other files, also when the value goes
+  through a local (`const key = options[value]; t(key)`) or a function's return value. This also fixes custom hooks
+  like `useT(ns) { const { t } = useTranslation(ns) }`, whose keys went to the namespace of any `const ns = 'admin'`
+  in the project (the same for `keyPrefix`). Parameters with a default value or typed with a union or an interface
+  still resolve as before. Fixes [#316](https://github.com/i18next/i18next-cli/issues/316).
+- chore(deps): `ora`, `execa` and `inquirer` are replaced by `yocto-spinner`, `nano-spawn` and the single
+  `@inquirer/input`, `@inquirer/select`, `@inquirer/confirm` and `@inquirer/password` prompts. Prompts, spinners and
+  the `locize`, `git` and browser-opener subprocesses behave as before. The install tree no longer contains
+  `is-interactive`, `is-unicode-supported`, `safer-buffer`, `iconv-lite`, `@inquirer/external-editor`, `path-key` and
+  `get-east-asian-width`, including the three packages Socket rated as high-severity alerts.
+
+## 1.80.5
+
+- fix(extract): Svelte and Vue files with a generic arrow function in `<script lang="ts">` are no longer skipped.
+  Plugin output is parsed as TSX, where `<T>(value: T) => value` reads as a JSX tag, so the file failed with
+  `Skipping file due to error` and all its keys were missing. When TSX rejects plugin output, it is now parsed as plain
+  TypeScript. [#314](https://github.com/i18next/i18next-cli/pull/314)
+- fix(extract): with `sort: false`, arrays read with `returnObjects` stay arrays. `extract` wrote
+  `{ "faq": [{ … }] }` back as `{ "faq": { "0": { … } } }`, so `extract --ci` always failed for such a project.
+  [#315](https://github.com/i18next/i18next-cli/pull/315)
+
+## 1.80.4
+
+- fix(rename-key): calls with a string default value are renamed in the source. `t('key', 'Default')` and
+  `t('key', 'Default', { … })` were left untouched while the translation files were renamed, so the next `extract`
+  brought the old key back. Moving such a key to another namespace keeps the default value:
+  `t('key', 'Default', { ns: 'ns2' })`.
+- fix(extract): plural forms of a key stored flat stay flat in secondary locales. With `"Loading..._one"` in
+  `ru/translation.json`, `extract` also wrote a nested copy, `{ "Loading": { "": { "": { "_one": … } } } }`; the same
+  happened for generated forms (`_few`, `_many`), preserved `_zero` forms, context variants and `preservePatterns`.
+  A file that already has these nested copies loses them on the next `extract`.
+
+## 1.80.3
+
+- fix(rename-key): keys the extractor stores flat are renamed in the translation files. Renaming `"Loading..."` to
+  `"Saving..."` left the old key in place and wrote `{ "Saving": { "": { "": { "": "Loading..." } } } }`; renaming
+  `common.ok` to `"Okay, thanks."` wrote `{ "Okay, thanks": { "": "OK" } }`. The new key is now written where the next
+  `extract` puts it (flat for `"Loading..."`, natural-language and `<Trans>` keys), and the old key is removed however
+  the file stores it. [#311](https://github.com/i18next/i18next-cli/pull/311)
+
+## 1.80.2
+
+- fix(sync): flat keys that contain the key separator keep their translations. The extractor writes keys like
+  `"Loading..."` or `"Hello world. Bye"` as one flat key, but `sync` split them on the separator, so a secondary file
+  with `{ "Loading...": "Lädt..." }` became `{ "Loading": { "": { "": { "": "" } } } }` and the translation was lost.
+  `sync` now writes them flat, and `status`, `localize` and `rename-key` find their values too. A secondary file
+  already broken this way gets its flat key back (with an empty value) on the next `sync`.
+  [#310](https://github.com/i18next/i18next-cli/pull/310)
+- fix(types): placeholders with spaces on one side only (`{{ name}}`) are trimmed, and `enableSelector` no longer
+  throws on plural keys whose base name is `constructor`, `toString`, … or also an object
+  (i18next-resources-for-ts 2.1.2).
+
+## 1.80.1
+
+- fix(extract): a `<Trans>` interpolation variable named `format` is extracted. `<Trans>Export as {{ format }}</Trans>`
+  was extracted as `Export as `, because react-i18next read `format` as the formatter name and dropped the variable;
+  it is now `Export as {{format}}`, as react-i18next 17.1.8 renders it. Requires react-i18next `^17.1.8`.
+- chore(deps): update dependencies within their ranges and neostandard to 0.14.
+
+## 1.80.0
+
+- feat(lint): in the i18next format, the translation files of every locale are compared with the primary language:
+  interpolations by name (`{{name}}`, `{{- name}}`, `{{val, number}}`), nested `$t(key)` references and tags (`<0>`,
+  `<1/>`, `<bold>`), except the basic HTML react-i18next keeps (`transKeepBasicHtmlNodesFor`). A translation that
+  renamed or dropped a placeholder is reported with file, key and line, e.g.
+  `greeting: missing {{name}}, unexpected {{nom}} (compared with "en")`. Plural forms are compared as a group, so
+  `{{count}}` may be left out of `_one` or `_zero`. A warning by default, so existing CI runs keep passing;
+  `lint.checkTranslationPlaceholders: 'error'` fails the run, `'off'` disables it. Until now only ICU and MF2 projects
+  had this check.
+- feat(status): values identical to the primary language (English copied into `de`) are marked
+  `≈ (identical to en)` and counted in the summary. `status.checkIdentical`: `'warn'` (default) still counts them as
+  translated and keeps the exit code, `'error'` counts them as untranslated, `'off'` disables it. Locales of the
+  primary's language (`en-GB` with `en`), values without letters, URLs, e-mail addresses and short all-caps words
+  (`OK`, `FAQ`) are skipped; other values that stay the same go into `status.ignoreKeys`.
+- feat(lint): `lint --update-baseline` writes the current issues to `i18next-lint-baseline.json` (`lint.baseline` for
+  another path). While the file exists, `lint` reports and fails only on new issues, so a codebase with existing
+  hardcoded strings can run `lint` in CI. Issues are matched by file, type and text, not by line.
+- fix(lint): interpolations are read like i18next does. The unescaped `{{-name}}` was read as a parameter `-name`, so
+  `t('Hi {{-name}}', { name })` reported two false interpolation issues; `{{- name}}` and names outside `[A-Za-z0-9_.-]`
+  (`{{größe}}`) were not read at all.
+- docs(types): `transKeepBasicHtmlNodesFor` defaults to react-i18next's `['br', 'strong', 'i', 'p']`.
+- docs(skill, localize): after translating by hand, run `lint` to check the placeholders.
+
+## 1.79.1
+
+- fix(init, migrate-config): the default source glob includes `.mjs` (`src/**/*.{js,jsx,mjs,ts,tsx}`), in `init`, in the
+  config detected for a project without one, and in `migrate-config` when the old config has no `input`. Existing
+  configs do not change. [#309](https://github.com/i18next/i18next-cli/pull/309#issuecomment-6310275918)
+
+## 1.79.0
+
+- feat(extract, instrument, lint): a `.mjs` file with JSX is parsed with the same JSX fallback as a `.js` file,
+  including the constants pre-scan of `extract`. Before, it failed with a syntax error and `extract` exited with 1.
+  [#309](https://github.com/i18next/i18next-cli/pull/309)
+
+## 1.78.0
+
+- feat(lint): with `messageFormat: 'mf2'`, `lint` warns when whitespace at the start or end of a pattern differs from
+  the primary language. MF2 keeps a space inside `{{ }}` as text, so `{{ {$count} files}}` shows it in the app. A
+  warning does not fail the run.
+- fix(lint): a language code with `_` (`ru_RU`, `pt_BR`) is read as `ru-RU`, `pt-BR` for the plural categories. Before,
+  `Intl` rejected it and only `other` was required, so a `ru_RU` plural with only `one` and `other` passed.
+- fix(lint): the required plural categories are `other` plus every category a whole number below one million selects
+  (was 0 to 1000), the same rule as Locize; exact selectors count for a category only when it selects a few small
+  numbers. No locale's result changes with today's CLDR data.
+- docs(skill): the ICU and MF2 reference names the common MF2 plural mistakes: `other` instead of `*`, `{{ {$count}`
+  instead of `{{{$count}`, and spaces inside `{{ }}`.
+
+## 1.77.0
+
+- feat(types): with `extract.messageFormat: 'icu'` or `'mf2'`, a newly generated `i18next.d.ts` sets
+  `parseInterpolation: 'icu'` or `'mf2'` when the project's i18next is 26.5.0 or later, so `t()` options are type-checked
+  against the arguments of each message. With i18next 26.2.0 to 26.4.x it still sets `parseInterpolation: false`. The
+  version is read from `node_modules/i18next/package.json`, from the working directory upwards (hoisted monorepo
+  installs count); without an installed i18next it stays `false`. The warning for an existing `i18next.d.ts` without
+  `parseInterpolation` suggests the value for your i18next version, and an existing file that still sets `false`
+  although your i18next supports the typed value gets a hint.
+- docs(skill): the ICU and MF2 reference describes `parseInterpolation: 'icu'` / `'mf2'`.
+
+## 1.76.0
+
+- feat: new `extract.messageFormat` option, `'i18next'` (default), `'icu'` ([i18next-icu](https://github.com/i18next/i18next-icu))
+  or `'mf2'` ([i18next-mf2](https://github.com/i18next/i18next-mf2)), for the syntax of your translation values.
+- feat(extract): with `messageFormat: 'icu'` or `'mf2'`, `extract` writes one key per message. `t('photos', '{count,
+  plural, ...}', { count })` gave `photos_one` and `photos_other` (plus `_few` and `_many` for languages like Polish),
+  keys i18next-icu and i18next-mf2 never read, and `context` gave `_male` keys; now it gives `photos`. `$t()` in a value
+  is no longer read as nesting, and the children of `<Trans>` are written with `{name}` (ICU) or `{$name}` (MF2)
+  instead of `{{name}}`, which ICU and MF2 rendered as text.
+- feat(extract): `IcuTrans` and `IcuTransWithoutContext` are extracted, also when imported under another name (key from
+  `i18nKey`, or `defaultTranslation` when there is none), and so are the `Trans`, `Plural`, `Select` and `SelectOrdinal`
+  components of `react-i18next/icu.macro`, with the message the macro builds (`<Trans>Welcome, <strong>{name}</strong>!</Trans>` gives `Welcome, <0>{name}</0>!`). Before, `IcuTrans` was
+  not extracted, and the macro `<Trans>` was read as react-i18next `Trans` and written as
+  `Welcome, <strong>{{name}}</strong>!`, which the compiled `IcuTrans` rendered as text.
+- feat(status): with `messageFormat: 'icu'` or `'mf2'`, a plural or select message counts as one key, so `status` no
+  longer reports missing `_few` and `_many` keys.
+- feat(instrument): with `messageFormat: 'icu'` or `'mf2'`, `instrument` writes `{name}` / `{$name}` placeholders, a
+  `count === 1 ? … : …` ternary becomes one plural message instead of `defaultValue_one` / `defaultValue_other`, and
+  the i18n init file it creates registers `i18next-icu` (with `intl-messageformat` in the install hint) or `i18next-mf2`.
+- feat(extract, instrument): with `messageFormat: 'icu'` or `'mf2'`, the text around converted placeholders (`Trans` values, `instrument`) is
+  escaped: `File '{{name}}' not found` becomes `File ''{name}' not found`, because an apostrophe before `{` starts quoted
+  text in ICU and `'{name}'` would render as the text `{name}`; literal braces are quoted (ICU) or escaped (MF2).
+- feat(lint): with `messageFormat: 'icu'` or `'mf2'`, `lint` parses every value in the translation files of all
+  locales and reports, with file, key and line (JSON files):
+  - syntax errors with the parser's message (`greeting: ICU syntax error: EXPECT_ARGUMENT_CLOSING_BRACE at column 7`),
+    with a hint when the value contains i18next's `{{`
+  - argument names that differ from the primary language, so a renamed or missing `{name}` is caught (`#` is not an argument)
+  - plural categories that do not fit the locale, for `plural` and `selectordinal` (MF2: `.match` on `:number` or
+    `:integer`). Allowed are the locale's CLDR categories, required are `other` plus every category a whole number from
+    0 to 1000 selects: `ru` needs `one`, `few` and `many`, while `fr`, `es`, `it` and `pt` may leave out `many` (only from
+    1,000,000) and `cs` its `many` (fractions only), and `zero` in `en` is reported as never used. Exact selectors like
+    `=0` are allowed and count for a category when they cover every whole number it is used for (`=1` covers `one` in
+    `en`, not in `ru`, where `one` is also 21, 31, ...). For a locale `Intl` does not know only `other` is required.
+- fix(lint): with `messageFormat: 'icu'` or `'mf2'`, the `t()` interpolation check reads the arguments with the same
+  parser. ICU braces like `male {{name}}` are no longer taken for `{{name}}` interpolation (which reported the `gender`
+  passed to a select as unused), and `t('greeting', 'Hello {name}', { nmae })` is reported.
+- feat(types): with `messageFormat: 'icu'` or `'mf2'`, a newly generated `i18next.d.ts` sets `parseInterpolation: false`
+  (i18next 26.2.0+), so ICU and MF2 plurals no longer break the type-safe `t`. For an existing file without it, `types`
+  prints a warning.
+- docs(skill): the i18next-localization skill has an ICU and MF2 section: which format to choose, setup, what silently
+  stops working, `IcuTrans`, `parseInterpolation: false` and `extract.messageFormat`.
+- deps: `@formatjs/icu-messageformat-parser` (the parser i18next-icu uses through intl-messageformat) and `messageformat`
+  (the MF2 implementation i18next-mf2 uses). They are only loaded when `messageFormat` is `'icu'` or `'mf2'`.
+
+## 1.75.3
+
+- fix(extract): options passed in a variable are read like inline ones. With `const params = { count }`,
+  `t('key', params)` now extracts the plural keys (and reads `context`, `ns`, `defaultValue` the same way),
+  where it used to extract only `key`. A variable a file declares also no longer resolves to a same-named
+  variable of another file: `t('key', overwrittenParams)` took `y=true` as its default value from an
+  unrelated function-local `overwrittenParams` array elsewhere. Fixes
+  [#307](https://github.com/i18next/i18next-cli/issues/307).
+
+## 1.75.2
+
+- fix(extract): declarations with the same name in different files no longer overwrite each other.
+  Two generated OpenAPI clients that both export `components` resolved to whichever file was read first,
+  so `import { components as githubComponents } from './github-api'` and
+  `import { components as digitalOceanComponents } from './digital-ocean-api'` extracted the keys of only one
+  of them, and moving files around changed which. A name now resolves to the module the file imports it
+  from, for renamed and plain imports, namespace imports (`GH.components`), `.js` import specifiers and
+  tsconfig `paths` aliases. Imports that cannot be traced to a scanned file (packages, re-exporting barrels)
+  still resolve by name as before. Fixes [#306](https://github.com/i18next/i18next-cli/issues/306).
+
+## 1.75.1
+
+- fix(extract): types and values read through a namespace import resolve like named imports. With
+  `import * as Types from './types'`, a qualified type (`(color: Types.Color) => …`, `x as Types.Color`,
+  `FC<Types.Props>`, `declare const s: Types.Status`) and a namespace member (`Types.SIZES.map(…)`,
+  `Types.Status.Done`, `t(Types.LABELS.save)`, `Object.keys(Types.LABELS)`) now extract their keys, also
+  for a namespace re-exported from a barrel (`export * as Shared from './types'`). Fixes
+  [#305](https://github.com/i18next/i18next-cli/issues/305).
+- fix(extract): an exported `as const` object resolves in the files that import it: `t(LABELS.save)` and
+  `Object.keys(LABELS)` only worked in the declaring file before.
+- fix(extract): a value typed `keyof typeof MAP` resolves to the map's keys, so
+  `` t(`label.${key}`) `` with `declare const key: keyof typeof LABELS` extracts `label.save` and
+  `label.cancel`. This branch never matched before.
+
+## 1.75.0
+
+- feat(extract): new `extract.maxTypeDepth` option sets how many levels of nested object members are
+  followed when a dynamic key reads a typed value (default: 5). Higher values cost time and memory on
+  large recursive types such as OpenAPI schemas. Requested in
+  [#302](https://github.com/i18next/i18next-cli/issues/302#issuecomment-6039348480).
+- fix(extract): the depth now counts from the type an indexed access picks instead of from the declared
+  wrapper type. `type Pet = components['schemas']['Pet']` gets the full depth below `Pet`, where the
+  `components`/`schemas` wrapper used to take two of the five levels.
+- fix(extract): numeric keys resolve in object types and indexed access types, so openapi-typescript
+  response types work:
+  `operations['getPet']['responses'][200]['content']['application/json']` and
+  `op.responses[200].content['application/json'].status` resolved nothing before.
+
+## 1.74.8
+
+- fix(extract): a commented template literal no longer extracts its placeholder as a key.
+  `` // t(`QUARTER.${q}`) `` extracted `QUARTER.${q}` and `` // t(`status.${deepObject.status}`) `` extracted
+  `status.${deepObject.status}`. Such a comment now keeps the existing keys it matches (`QUARTER.1`,
+  `QUARTER.2`, …) even with `removeUnusedKeys`, the way a commented static key keeps its key, while code can
+  still add new matching keys. A pattern without any static part (`` `${a}.${b}` ``) is ignored. Fixes
+  [#304](https://github.com/i18next/i18next-cli/issues/304).
+
+## 1.74.7
+
+- fix(extract): a selector `i18nKey` on `<Trans t={t}>` now routes into the hook's namespaces the same way
+  `t()` does, matching react-i18next 17.0.16. With `const { t } = useTranslation(['ns1', 'ns2'])`,
+  `<Trans t={t} i18nKey={$ => $.ns2.message} />` was filed as `ns1:ns2.message`; it is now filed as
+  `ns2:message`, like `t($ => $.ns2.message)`. Under `types.enableSelector: 'strict'` a leading primary
+  namespace is stripped too (`useTranslation('only')` with `$ => $.only.key` files `only:key`). Reported in
+  [react-i18next#1933](https://github.com/i18next/react-i18next/issues/1933).
+- fix(extract): the props of a component typed `React.FC<Props>` (also `FC`, `FunctionComponent`),
+  `forwardRef<Ref, Props>(…)` or `memo<Props>(…)` are typed by `Props`, and iterating a typed member binds
+  the element. `props.colors.map((color) => t(\`Color.${color}\`))` with `colors: Color[]` extracted nothing
+  before unless `color` was asserted with `as Color`. Arrays of objects work the same way:
+  `props.items.map(({ kind }) => …)`, `for (const item of props.items)` and a destructured
+  `({ items }) => items.map(…)`. Fixes [#303](https://github.com/i18next/i18next-cli/issues/303).
+
+## 1.74.6
+
+- fix(extract): iterating an inline array literal binds the element like iterating a named constant
+  does. `([1, 2, 3, 4] as const).map((q) => t(\`QUARTER.${q}\`))`, `for (const unit of ['day', 'hour'] as const)`
+  and inline arrays of objects extracted nothing before. Fixes
+  [#301](https://github.com/i18next/i18next-cli/issues/301).
+- fix(extract): members of nested object types resolve. `t(\`barStatus.${deepObject.Bar.status}\`)` and
+  `t(\`fooBarStatus.${deepObject.Foo.Bar.status}\`)` now extract the nested union's values, also through
+  references to other types, optional chaining (`pet.category?.kind`), destructuring
+  (`const { kind } = pet.category`) and indexed access types (`DeepObject['Bar']['status']`,
+  `components['schemas']['Pet']`), so types generated by openapi-typescript work. Nested members are
+  followed up to five levels below the declared type, as in `components.schemas.Pet.category.kind`.
+  Fixes [#302](https://github.com/i18next/i18next-cli/issues/302).
+
+## 1.74.5
+
+- fix(extract): a value typed as an array of a string union (`Color[]`, `readonly Color[]`,
+  `Array<Color>` or an alias of one) now resolves to the union's values, so
+  `colors.map((color) => t(\`color.${color}\`))` and `for (const color of colors)` extract every
+  key instead of nothing. Before, this only worked with `color as Color`. Fixes
+  [#300](https://github.com/i18next/i18next-cli/issues/300).
+
+## 1.74.4
+
+- fix(extract): a conditional namespace argument resolves to the namespaces in its branches.
+  `useTranslation(confirmEmail ? ['reset-email-page', 'reset-page'] : 'reset-page')` filed
+  `t('form.title')` under `defaultNS`, so `status` reported it as absent and `extract` removed the
+  existing translations from `reset-page` and `reset-email-page`. The key is now extracted into the
+  primary namespace of every branch (here `reset-email-page` and `reset-page`), also for
+  `<Trans t={t}>`. Fixes [#299](https://github.com/i18next/i18next-cli/issues/299).
+
+## 1.74.3
+
+- fix(extract): dynamic keys typed by a declaration in a file without any translation call
+  resolve again when that declaration builds on one from a file that sorts after it. In 1.74.2,
+  `type Kind = Base | 'extra'` in `api/types.ts` with `Base` declared in `shared/base.ts` expanded
+  `` t(`kind.${kind}`) `` to `kind.extra` only, and the same happened to interface members,
+  function return types and functions returning an enum member declared further down the list.
+  Such declarations are now resolved again once every file has been scanned, which also removes
+  the file-order dependence this had before 1.74.2.
+- feat(extract): more implicitly typed values expand to their finite set of keys. Fixes
+  [#298](https://github.com/i18next/i18next-cli/issues/298):
+  - members of an object returned by a function with an object return type:
+    `` const animal = getAnimal(); t(`animal.${animal.type}`) ``, also through
+    `const { type } = getAnimal()`, `const kind = animal.type` or `getAnimal().type`.
+  - unions and intersections of object types (`type Animal = Duck | Dog` gives `animal.type` the
+    values of both) and generic object types (`type AnimalBase<T extends AnimalType> = { type: T }`
+    used as `AnimalBase<'DUCK'>`, or bare, which falls back to the parameter's default or
+    constraint).
+  - `(typeof COLOR)[keyof typeof COLOR]` for an `as const` object or an enum.
+  - elements of an array, `colors[i]`, without an annotation on the variable they are assigned to.
+
+  Narrowing is not followed: after `if (color !== 'BLUE')`, `color.BLUE` is still extracted.
+- fix(extract): shorthand options resolve like their long form. `t('k', { ns })` filed the key
+  under the default namespace, `{ defaultValue }` was ignored and
+  `useTranslation('ns', { keyPrefix })` lost its prefix. Thanks to
+  [@aaronshaf](https://github.com/aaronshaf) for reporting it in
+  [#291](https://github.com/i18next/i18next-cli/pull/291).
+
+## 1.74.2
+
+- fix(extract): the output no longer depends on the order in which `glob` happens to return the
+  input files. When two call sites give one key different defaults (`t('k', 'Adding...')` in one
+  file, `t('k', 'Importing...')` in another), the first file visited wins, so an unchanged source
+  tree could produce a different catalog from run to run and flip CI checks that compare against a
+  committed catalog. Files are now visited in sorted path order, which makes the winner stable. If
+  your sources contain such conflicts, the kept default may change once with this release. To
+  hear about them instead of silently keeping one default, set
+  `extract.warnOnConflicts` to `'warn'` or `'error'`. Fixes
+  [#296](https://github.com/i18next/i18next-cli/issues/296).
+- perf(extract): files that contain no translation call, hook, `TFunction`, `getFixedT` or Trans
+  component (as configured via `functions`, `useTranslationNames` and `transComponents`) are no
+  longer parsed and walked a second time for keys. The constants pre-scan still reads every file,
+  so types and `as const` values declared in such files keep resolving dynamic keys elsewhere.
+  Plugins with an `onVisitNode` hook still see every file. On large trees where most files hold no
+  translations this cuts extraction time considerably. Fixes
+  [#297](https://github.com/i18next/i18next-cli/issues/297).
+- chore: update dependencies
+
+## 1.74.1
+
+- fix(extract): keys wrapped in parentheses are no longer dropped. `t(('key'))` and
+  `t(cond ? 'a' : ('b'))` produced nothing, which is easy to hit without meaning to, since Prettier
+  wraps the longer branch of a ternary in parentheses when the call does not fit on one line. The
+  same wrapper broke the options argument (`t('item', ({ count }))` extracted no plural forms), a
+  parenthesized default value (`t('welcome', ('Welcome!'))`), key arrays and selectors
+  (`t((['a', 'b']))`, `t((($) => $.sel.key))`), `useTranslation(('ns'))`, and option values such as
+  `{ ns: ('other') }`, which silently filed the key under the default namespace. Fixes
+  [#295](https://github.com/i18next/i18next-cli/issues/295).
+
+## 1.74.0
+
+- fix(extract): finite dynamic keys now resolve through renaming imports. `import { ResourceStatus
+  as Status } from './types'` followed by `` t(`status.${s}`) `` used to expand to nothing, because
+  the resolver's tables are keyed by the declared type name and nothing mapped the local binding
+  back to it. Applies to type aliases, enums, interfaces, `as const` arrays and helper functions
+  alike. Part of [#294](https://github.com/i18next/i18next-cli/issues/294).
+- feat(extract): `node_modules` is no longer ignored unconditionally. The default ignore is
+  dropped as soon as one of your `extract.input` patterns mentions it. Glob a dependency's
+  `.d.ts` to let the type-aware resolver expand the string unions and enums it declares, or glob a
+  package's sources to extract the keys it ships. Fixes
+  [#294](https://github.com/i18next/i18next-cli/issues/294) and
+  [#213](https://github.com/i18next/i18next-cli/issues/213).
+
+## 1.73.3
+
+- fix(extract): default values that are not string literals are now resolved statically instead of
+  being dropped. `t('greeting', STRINGS.greeting)`, `t('bye', FAREWELL)`,
+  `` t('k', `${GREETING} there`) `` and the same expressions inside `defaultValue` /
+  `defaultValue_one` / `defaultValue_other` options pick up the value from a module-scope const,
+  object map or enum. Ambiguous expressions such as ternaries still fall back to the key. Fixes
+  [#293](https://github.com/i18next/i18next-cli/issues/293).
+
+## 1.73.2
+
+- fix(deps): `react` is no longer a runtime dependency; it only lives in `devDependencies` for the
+  type import. The CLI only needs `react-i18next` at runtime, which resolves React from the
+  consuming project. Previously the `^19.2.8` floor could not dedupe against a project pinning an
+  older React patch (Expo SDK 57 pins `react@19.2.3`) and nested a second copy under
+  `node_modules/i18next-cli`, which Expo Doctor flagged as a duplicate. Now a single React copy is
+  used. Fixes [#292](https://github.com/i18next/i18next-cli/issues/292).
+
+## 1.73.1
+
+- fix(extract): the `<Trans>` child error added for
+  [#246](https://github.com/i18next/i18next-cli/issues/246) now also fires for `{table.name}`,
+  `{fn()}`, `` {`a ${b}`} `` and any other child expression the extractor cannot serialise, not
+  only for bare identifiers like `{name}`. react-i18next inlines the value at runtime, while
+  extraction silently produced an empty `<1></1>` placeholder, so the key never matched. The
+  message suggests the `{{name: table.name}}` object form. It also no longer asks for a `values`
+  prop: react-i18next reads the value from the `{{name}}` object child itself, so
+  `<Trans>See table {{name}}</Trans>` works on its own. Extraction output is unchanged.
+  Fixes [#290](https://github.com/i18next/i18next-cli/issues/290).
+
+## 1.73.0
+
+- feat: `init` runs without the wizard. `--yes` takes the detected defaults for every question
+  not answered by `--locales`, `--input`, `--output`, `--backend <local|locize|other>` or
+  `--file-type <ts|js>`; `--project-id <id>` (or `LOCIZE_PROJECTID`) supplies the Locize project id
+  and skips the signup page and the credential prompts. Made for scripts and AI coding agents,
+  which cannot drive the prompts.
+- feat: `init --agent-note` (also the last wizard question, default No) appends a short
+  `## Internationalization` section to `AGENTS.md` (and `CLAUDE.md` when present; when neither
+  exists, `AGENTS.md` is created, plus a `CLAUDE.md` importing it if the project has a `.claude/`
+  folder) so the next agent session knows where the locale files are and how translations are
+  managed. The exact text is in the README; `--no-agent-note` skips the question. Nothing is
+  written unless you say yes.
+- change: the `localize` agent prompt (`--print-agent-prompt`) and the `i18next-localization`
+  skill no longer presume Locize. The agent asks the developer once, before creating the config,
+  whether to manage the translations with Locize or keep the files in the repository, and never
+  creates a project or asks for an API key unless they chose Locize. The prompt now creates the
+  config with `init --yes ...` instead of the interactive wizard.
+
+## 1.72.4
+
+- docs: the README shows the skills.sh install badge for the `i18next-localization` Agent Skill, and
+  `i18next-cli --help` now ends with a one-line hint on installing it
+  (`npx skills add i18next/i18next-cli`). No other command prints anything new.
+
+## 1.72.3
+
+- feat(funnel): the Locize hint after `status`, `extract` and `sync` is now a single line that
+  names the untranslated-key gap and the one command that fills it (`npx i18next-cli localize`),
+  each with its own `?from=` tagged register link. It only appears when secondary locales
+  actually have untranslated keys; the 24h cooldown and the CI/non-TTY suppression are unchanged.
+
+## 1.72.2
+
+- fix: extract dynamic keys built from `for...of` loop variables. `for (const unit of UNITS)` over
+  an `as const` string array now binds `unit` while the loop body is walked, just like `.map()` /
+  `.forEach()` callback parameters already did.
+- fix: capture `as const` arrays of object literals (e.g. `[{ unit: 'day' }, { unit: 'hour' }]`),
+  so both `for (const { unit } of UNITS)` and `UNITS.forEach(({ unit }) => ...)` resolve the
+  destructured properties.
+- fix: resolve object destructuring of a known `as const` object, e.g. `const { unit } = rate;`
+  followed by ``t(`msg ${unit}`)``
+  ([#289](https://github.com/i18next/i18next-cli/issues/289)).
+
+## 1.72.1
+
+- fix: the interactive `instrument` prompt crashed because it still used inquirer's `list` prompt
+  type, which was removed in inquirer 13; switched to `select`
+  ([#288](https://github.com/i18next/i18next-cli/pull/288)).
+
+## 1.72.0
+
+- feat: `locize-sync --changed-only [--base <ref>]` syncs and AI-auto-translates only the keys
+  that changed on the current git branch vs. the base branch — ideal for translating just a pull
+  request's diff instead of the whole project. The source-language files are diffed against the
+  merge-base with the base branch (auto-detected via `origin/HEAD`, `main`, `master`, or set with
+  `--base`); key creation, value updates and auto-translation are restricted to those keys, and
+  deletions are skipped. Changed keys are scoped per namespace file, and when any plural variant
+  of a key changed, all its plural forms are included (target languages often need more CLDR
+  plural forms than the source). Also configurable via `locize.changedOnly` /
+  `locize.changedOnlyBase`. Requires git and locize-cli >= 12.7.
+- feat: `sync --changed-only [--base <ref>]` applies the same branch-diff scoping to the local
+  synchronizer: only primary-language keys added or modified on the branch are propagated to the
+  secondary language files, and obsolete keys are left in place. Works with JSON, JSON5 and YAML
+  translation files (JS/TS resource modules cannot be parsed from git history and fail with a
+  clear message). Unusable git setups (git missing, not a repository, unresolvable base ref) fail
+  the command with actionable errors that mention `actions/checkout` `fetch-depth: 0` for shallow
+  CI clones.
+
+## 1.71.3
+
+- fix: `fallbackNS` accounting now works when the fallback namespace lives in its own file
+  outside a merged output (`mergeNamespaces: true`), e.g. split out and hidden via
+  `ignoreNamespaces`: `status` and `extract` look up a fallback namespace missing from the
+  merged file at its per-namespace path, and a function `output` resolves the merged file
+  without a namespace (matching what `extract` writes), so hybrid layouts are expressible via
+  an `output` function. When a `fallbackNS` is listed in `ignoreNamespaces` but its
+  translations cannot be found, `status` now warns instead of silently reporting the keys as
+  absent ([#287](https://github.com/i18next/i18next-cli/issues/287)).
+
+## 1.71.2
+
+- fix: `extract` no longer scales quadratically with the number of keys: selector-API /
+  `returnObjects` keys are matched via an O(key depth) Set lookup instead of one regex per
+  object key, and the per-key leaf check uses a precomputed ancestor-prefix Set instead of
+  scanning all keys. A 4-minute run on a ~11,500-key monorepo drops to seconds; written
+  output is byte-identical ([#286](https://github.com/i18next/i18next-cli/issues/286)).
+
+## 1.71.1
+
+- feat: `.reduce()`/`.reduceRight()` over an `as const` array now bind the element callback
+  parameter (the second one, `(acc, el) => …`) like `.map()`/`.forEach()` already did, so
+  ``ERRORS.reduce((acc, n) => { acc[n] = t(`errors.${n}.title`) }, {})`` extracts every element
+  without the `(typeof ERRORS)[number]` cast workaround
+  ([#285](https://github.com/i18next/i18next-cli/issues/285)).
+
+## 1.71.0
+
+- feat: new `status.ignoreKeys` config option: glob patterns (same shape as `preservePatterns`,
+  optional `ns:` prefix) for keys that `status` should not report or fail on, e.g. keys that are
+  intentionally empty in some locales. Only affects `status`; `extract` is unchanged
+  ([#284](https://github.com/i18next/i18next-cli/issues/284)).
+
+## 1.70.4
+
+- feat: `useTranslation(ns)` where `ns` is a function parameter now resolves to the parameter's
+  string default (`({ ns = 'a' }) =>`, `(ns = 'a') =>`), or, without a default, to the first
+  member of its inline union type (`{ ns: 'a' | 'b' }`), mirroring the `TFunction<'a' | 'b'>`
+  rule ([#284](https://github.com/i18next/i18next-cli/issues/284)).
+
+## 1.70.3
+
+- fix: `TFunction<Ns>` members are now found inside intersection types
+  (`Base & { t?: TFunction<Ns> }`), including optional `t?:` and overload implementation
+  signatures ([#284](https://github.com/i18next/i18next-cli/issues/284)).
+- fix: named type aliases (`TFunction<Namespace>`, `<Ns extends Namespace>`) are no longer
+  resolved to their first member. Introduced in 1.70.2, this could attribute keys to an arbitrary
+  namespace when the alias is an app-wide union. Inline unions and literal generic constraints still
+  resolve to the first member.
+
+## 1.70.2
+
+- fix: namespace detection for union / generic / array forms
+  ([#284](https://github.com/i18next/i18next-cli/issues/284)):
+  - `TFunction<'a' | 'b'>`, `TFunction<Ns>` with `<Ns extends 'a' | 'b'>`, and `TFunction<Alias>`
+    with a local `type Alias = 'a' | 'b'` resolve to the first member (plain, destructured and
+    `props.t` member-call forms).
+  - `useTranslation(['a', 'b'] as const)` and `useTranslation(NS)` with a local
+    `const NS = ['a', 'b']` are resolved like the inline array form.
+
+## 1.70.1
+
+- feat: further namespace detection improvements
+  ([#284](https://github.com/i18next/i18next-cli/issues/284)):
+  - `ReturnType<typeof useTranslation<'ns', 'keyPrefix'>>['t']` on parameters (plain and
+    destructured) is treated like `TFunction<'ns', 'keyPrefix'>`.
+  - A locally declared wrapper that forwards its first parameter as the key to an already scoped
+    translation function (e.g. `const t = useCallback((key, opts) => tLocal(key, opts), [...])`)
+    inherits that function's namespace / keyPrefix.
+- fix: `t()` calls inside fenced code blocks (```` ``` ````) of doc comments are no longer extracted
+  as real call sites.
+
+## 1.70.0
+
+- feat: improve namespace detection for `t` functions whose namespace is not a plain
+  `useTranslation('ns')` literal ([#284](https://github.com/i18next/i18next-cli/issues/284)):
+  - `useTranslation(ns ?? 'fallback')` / `useTranslation(ns || 'fallback')` now resolve to the
+    statically known side (the fallback literal when the left side is dynamic) instead of
+    silently falling back to `defaultNS`.
+  - `TFunction<'ns'>` / `TFunction<'ns', 'keyPrefix'>` is now honoured on destructured
+    parameters as well (`({ t }: { t: TFunction<'ns'> })`, `({ t }: Props)` with a local
+    interface or type alias), not only on plain `(t: TFunction<'ns'>)` parameters.
+  These previously caused `status` / `extract` to attribute such keys to the default namespace
+  and report them as missing.
+
+## 1.69.2
+
+- fix: support the AST shape of `@swc/core` 1.16, which types function, arrow and method
+  bodies as `FunctionBody` instead of `BlockStatement` (plain blocks like `if (x) { … }` are
+  unchanged). Every "is this a function body?" check silently went false, which broke selector
+  calls with a block body (`t($ => { return $.a.b })`), return-type inference from a function
+  body (finite dynamic keys), and React component-boundary detection in the instrumenter — so
+  `useTranslation()` / `<Trans>` were no longer injected. Both node types are now accepted.
+
+## 1.69.1
+
+- fix(lint): report hardcoded strings at the line where they actually occur. Line numbers were
+  resolved by searching the raw source text, so a short string was reported at the first place
+  it appeared as a substring anywhere in the file — e.g. `<span>in</span>` on line 4 was reported
+  on line 1 because of `import './settings.scss'`. Lines are now taken from the AST node's span,
+  falling back to the text search only when no span is available. This also fixes
+  `i18next-instrument-ignore` / `i18next-instrument-ignore-next-line` being ignored for such
+  strings, since the directives suppress issues by line
+  ([#283](https://github.com/i18next/i18next-cli/issues/283)).
+
+## 1.69.0
+
+- feat(lint): support `acceptedTags: 'all'` to lint every JSX tag, including custom
+  components, instead of the recommended built-in tag list. Useful together with
+  `acceptedAttributes` in codebases with many custom JSX elements where maintaining an
+  explicit tag accept-list is impractical. `ignoredTags` and `transComponents` still take
+  precedence, and the default behavior when `acceptedTags` is unset is unchanged
+  ([#282](https://github.com/i18next/i18next-cli/issues/282)).
+
+## 1.68.0
+
+- feat(status): add `--unused` to report only unused translation keys — keys present in the
+  translation files but no longer used in the source code. "Unused" is defined as what
+  `extract` with `removeUnusedKeys` would delete: the report runs the extractor in dry-run
+  mode (with `removeUnusedKeys` forced on, regardless of the config) and diffs the existing
+  key set against the pruned result, so it inherits all of extract's edge-case handling
+  (plural variants, context variants, `preservePatterns`, `ignoreNamespaces`). The command
+  never modifies any files and exits with a non-zero status code when unused keys are found
+  (or when source files failed to parse, since that could cause false positives), making it
+  a dedicated CI check alongside the missing-translations check `status <locale>`. Combines
+  with the locale argument and `--namespace`, e.g. `i18next-cli status en --unused`. Note
+  that static analysis cannot detect dynamically constructed keys; to find keys that are
+  truly unused at runtime, see https://www.locize.com/docs/guides/find-unused-translations
+  ([#281](https://github.com/i18next/i18next-cli/issues/281)).
+
+## 1.67.9
+
+- fix(types): derive `defaultNS` from the generated resources when `extract.defaultNS` is
+  `false`. i18next's type system cannot express `defaultNS: false` — `DefaultNamespace =
+  TypeOptions['defaultNS']` feeds `Ns extends Namespace`, so emitting `false` made every
+  `t()` call silently accept any string and the generated definitions checked nothing. The
+  namespace is now taken from the keys of the generated `Resources` interface (deduplicated
+  and sorted, preferring `'translation'`, and preferring a namespace inside `types.basePath`
+  over one resolved outside of it), with a warning naming the pick. `false` is still emitted
+  when the resource files are named after locales (`en.json` + `de.json`), where deriving
+  would turn sibling languages into namespaces. Only affects `i18next.d.ts` on first
+  creation; `resources.d.ts` and `--ci` behavior are unchanged
+  ([#280](https://github.com/i18next/i18next-cli/pull/280)).
+
+## 1.67.8
+
+- fix(extract): make the key sort order transitive, so `extract` is idempotent. The
+  comparator compared base keys for plural/plural pairs but full keys for every other
+  pair, which produced a cycle (`foo_solved < foo_zero < foo_one < foo_other < foo_solved`)
+  for a key that has both plural forms and a context variant in a locale with a `zero`
+  plural (lv, ru, pl, lt, uk, …). The resulting order then depended on the input order, so
+  the same file flipped key order back and forth on every extract/download cycle. Keys are
+  now always compared by base key first, then by variant rank (plain key, cardinal plurals,
+  ordinal plurals) ([#279](https://github.com/i18next/i18next-cli/issues/279)).
+- feat(extract): resolve finite string-literal unions through the element type of an
+  iterated array. `function f(items: IProps[])` with
+  ``items.map(({ size }) => t(`some_${size}`))`` now expands to one key per union member,
+  as does member access on the callback element (``items.forEach(item =>
+  t(`some_${item.size}`))``) and a typed array variable (`const items: IProps[] = …`).
+  Covers `T[]`, `Array<T>` and `ReadonlyArray<T>` for `map`/`forEach`/`flatMap`/`filter`/
+  `find`/`some`/`every` ([#210](https://github.com/i18next/i18next-cli/issues/210)).
+
+## 1.67.7
+
+- fix(instrument): skip module-scope strings instead of wrapping them in a `t()` call. A
+  top-level config/registry literal (`export const SECTIONS = [{ label: 'Appearance' }]`)
+  used to be rewritten to `i18next.t(...)` — evaluated once when the module is first
+  imported, so it may run before i18next is initialized and never updates on language
+  change. Such candidates are now left untouched and reported with a warning pointing at
+  the hook alternative. Strings inside plain (non-component) functions are still
+  instrumented with `i18next.t()` as before
+  ([#278](https://github.com/i18next/i18next-cli/issues/278)).
+- fix(instrument): a generated `import i18next from 'i18next'` is no longer appended to the
+  same line as a semicolon-terminated import
+  (`import { X } from "./x";import i18next from 'i18next'`). The insertion point now moves
+  past the end of the line, and a leading newline is added when the last import ends at
+  EOF without one ([#278](https://github.com/i18next/i18next-cli/issues/278)).
+
+## 1.67.6
+
+- fix(lint): a directory whose name matches the input globs (e.g. a folder called
+  `abc.tsx`) no longer aborts the run with `EISDIR: illegal operation on a directory,
+  read`. Source-file globs now pass `nodir: true`, which also covers the extractor and
+  the instrumenter ([#277](https://github.com/i18next/i18next-cli/issues/277)).
+
+## 1.67.5
+
+- fix(extract): correct `line`/`column` in plugin location metadata for files containing
+  multi-byte characters (em dashes, accented letters, CJK, emoji). SWC reports AST spans
+  as UTF-8 byte offsets, but the extractor treated them as JavaScript string indices, so
+  every multi-byte character shifted all following locations. The span base was also
+  computed by mixing a byte offset with a character index, which additionally skewed
+  locations in files whose leading comments contain multi-byte characters — that part
+  affected the linter and instrumenter too
+  ([#276](https://github.com/i18next/i18next-cli/issues/276)).
+
+## 1.67.4
+
+- fix(extract): resolve finite string-literal unions that reach a key through an
+  interface- or object-typed function parameter. `interface IProps { size: ChangeType }`
+  with ``function f({ size }: IProps) { return t(`some_${size}`) }`` now expands to one key
+  per union member. Covers destructured props (including renamed and defaulted ones),
+  member access on the parameter itself (``t(`some_${props.size}`)``), object type aliases
+  (`type Props = { size: 'x' | 'y' }`) and inline type literals. Bindings are scoped to the
+  function, so nothing leaks to same-named identifiers elsewhere
+  ([#210](https://github.com/i18next/i18next-cli/issues/210)).
+
+## 1.67.3
+
+- feat(lint): new opt-in `lint.checkPunctuationConcatenation` flags punctuation glued
+  onto a translation, e.g. `<label><Trans>Email</Trans>:</label>` or
+  `<div>- <Trans>item</Trans></div>`. Punctuation spacing and form differ across
+  languages (French needs a narrow no-break space before `:`, CJK uses fullwidth `：`,
+  RTL reorders), so it belongs inside the translation or in semantic markup. Accepts
+  the same values as `checkConcatenation` (`'warn'` / `'error'` / `'off'` / boolean)
+  and defaults to `'off'`, since keeping punctuation out of a translation is often
+  deliberate. Individual occurrences can be suppressed with the
+  `i18next-instrument-ignore` directive
+  ([#275](https://github.com/i18next/i18next-cli/issues/275)).
+
+## 1.67.2
+
+- fix(lint): broaden the `checkConcatenation` JSX detection to flag any ≥2 adjacent
+  translation units rendered as direct siblings — a `<Trans>` component or a
+  `{t(...)}` expression. This now catches `<Trans>…</Trans>{t('…')}`,
+  `{t('a')}{t('b')}` and two `<Trans>` separated only by whitespace, in addition to
+  the previous "`<Trans>` … text … `<Trans>`" case. Single translations next to
+  plain literal text or punctuation are still not flagged
+  ([#275](https://github.com/i18next/i18next-cli/issues/275)).
+
+## 1.67.1
+
+- feat(lint): `lint.checkConcatenation` now accepts a severity level in addition to
+  a boolean: `'error'` reports concatenation issues as errors so the `lint` command
+  exits non-zero (fails CI), `'warn'` (or `true`, the default) reports them as
+  non-failing warnings, and `'off'` (or `false`) disables the check. Previously the
+  concatenation check could only warn; making it fail the build required a custom
+  plugin ([#275](https://github.com/i18next/i18next-cli/issues/275)).
+
+## 1.67.0
+
+- feat(lint): detect string concatenation involving translated strings, an i18n
+  anti-pattern that breaks in languages which reorder or inflect the pieces. The
+  linter now flags JavaScript concatenation where an operand is a `t()` call
+  (e.g. `t('greeting') + ', ' + name`) and sentences split across multiple
+  `<Trans>` components joined by literal text
+  (e.g. `<p><Trans>…</Trans> and <Trans>…</Trans></p>`). It deliberately does not
+  flag `t()` used only as a nested call argument (e.g. `arr.indexOf(t('x')) + 1`)
+  or concatenation inside `t()` arguments (e.g. `t('prefix.' + suffix)`). Enabled
+  by default; disable with `lint.checkConcatenation: false`
+  ([#275](https://github.com/i18next/i18next-cli/issues/275)).
+- feat(lint): lint issues now carry an optional `severity` (`'error'` | `'warning'`).
+  Concatenation issues are reported as **warnings** — they are printed but do not
+  fail the run (the `lint` command exits non-zero only when there are errors), so
+  adding this check does not break existing CI pipelines. Hardcoded-string and
+  interpolation issues remain errors. Plugins may set `severity` on the issues
+  they emit (defaults to `'error'` when omitted).
+
+## 1.66.2
+
+- fix(extract): ignore `<Trans>` components that have neither an `i18nKey`
+  expression nor non-whitespace children, preventing `<Trans />` and
+  spread-only variants from creating an empty-string translation key
+  ([#274](https://github.com/i18next/i18next-cli/issues/274)).
+
+## 1.66.1
+
+- fix(logger): `ConsoleLogger.warn`/`error` no longer swallow their optional
+  second argument — plugin-hook failures (e.g.
+  `Plugin my-plugin onVisitNode failed:`) now print the caught error instead
+  of a bare message
+  ([#273](https://github.com/i18next/i18next-cli/pull/273), thanks
+  [@pjrobertson](https://github.com/pjrobertson)).
+
+## 1.66.0
+
+- fix(funnel): never print locize funnel/tip messages in non-interactive
+  contexts — they are now suppressed when `CI=true` or stdout is not a TTY,
+  and the once-per-24h cooldown applies unconditionally (newly created
+  translation files no longer bypass it). CI pipelines and first extractions
+  no longer get promotional output
+  (follow-up to [#20](https://github.com/i18next/i18next-cli/issues/20) /
+  [#222](https://github.com/i18next/i18next-cli/issues/222)).
+- feat(extract): new `sort: 'locize'` preset that mirrors the key order of
+  locize-published files (plain UTF-16 code-unit sort, case-sensitive, no
+  canonical plural-form reordering), making `extract` followed by
+  `locize-sync`/`locize-download` round-trip without spurious reorder diffs
+  (follow-up to [#106](https://github.com/i18next/i18next-cli/issues/106)).
+- test(locize): assert `--cdn-type` is forwarded to `download` and `migrate`,
+  guarding against the [#156](https://github.com/i18next/i18next-cli/issues/156)
+  class of regression.
+- docs(readme): new "Dynamic Keys" section documenting the built-in TS
+  type-aware resolution of finite dynamic keys shipped in v1.49
+  ([#210](https://github.com/i18next/i18next-cli/issues/210)) with
+  `preservePatterns` reserved for truly runtime-dynamic keys; note in
+  `migrate-config` that i18next-cli requires Node.js >= 22 (i18next-parser
+  still supported Node 18/20).
+
+## 1.65.0
+
+- fix(extract): respect `fallbackNS` — keys already translated in a fallback
+  namespace are no longer duplicated into the requesting namespace's file
+  ([#272](https://github.com/i18next/i18next-cli/issues/272)).
+  - Such keys are now attributed to the fallback namespace instead, so
+    `removeUnusedKeys` no longer prunes them from the fallback file (previously
+    a key like `cancel` living only in the fallback namespace was **deleted**
+    there and re-created in every namespace that used it).
+  - A key that already has a non-empty value in the requesting namespace's own
+    file is treated as an intentional per-namespace override and keeps being
+    extracted there, mirroring the i18next runtime lookup order (requested
+    namespace first, then the fallback chain). Empty-string placeholders left
+    behind by previous extract runs are cleaned up.
+  - Keys not found in any fallback namespace are still added to the requesting
+    namespace, like the i18next `saveMissing` behavior.
+- feat(extract): `fallbackNS` now also accepts an array of namespaces (looked
+  up in order, like the i18next runtime option) — supported by `extract`,
+  `status`, and the TypeScript types generator.
+
+## 1.64.2
+
+- fix(status): scope the pass/fail result to the requested locale
+  ([#271](https://github.com/i18next/i18next-cli/issues/271)).
+  - `status <locale>` now exits based on **that locale only**, instead of always
+    evaluating every secondary language. Previously, running e.g.
+    `status en-AU` on a fully-translated primary could print "🎉 All keys
+    present" and still exit `1` because an unrelated secondary (e.g. an empty
+    `de-DE`) was incomplete — a summary that contradicted the exit code.
+  - When the requested locale is the primary, the check still fails only on
+    *absent* keys (empty placeholders are tolerated); for a secondary it fails
+    on any untranslated/absent key. The global view (`status` with no locale)
+    is unchanged.
+  - The failure message now names the locale when scoped
+    (`Error: Incomplete translations detected for "de-DE".`) so the reason is
+    no longer hidden.
+
+## 1.64.1
+
+- fix(status): align plural reporting with the i18next runtime
+  ([#270](https://github.com/i18next/i18next-cli/issues/270)).
+  - Plural categories that `Intl.PluralRules` only selects for out-of-range
+    values (e.g. French `_many`, which fires only for counts ≥ 1,000,000) are
+    now treated as **optional**: a missing or empty variant is shown as a soft
+    "optional plural form" note instead of a hard "missing key" error, so it no
+    longer fails the check. Categories reachable by typical counts (including
+    decimals, e.g. Polish/Russian `other`) remain required.
+  - With `disablePlurals: true`, a key used with `count` is now considered
+    satisfied when either its plural variants (`_one`/`_other`) **or** the bare
+    key exist — mirroring the runtime's `key + suffix → key` resolution chain —
+    instead of demanding the literal bare key.
+
+## 1.64.0
+
+- feat: `extract.functions` now supports trailing wildcards to match any method
+  on an object, e.g. `'tProps.*'` matches `tProps.label(...)` / `tProps.title(...)`.
+  This complements the existing leading wildcard (`'*.t'`) and is also honored by
+  the linter and `rename-key` ([#269](https://github.com/i18next/i18next-cli/issues/269)).
+
+## 1.63.1
+
+- fix: `init --inlang` now pins `@inlang/plugin-i18next@6.2.1` (was 6.2.0).
+  6.2.1 restores Sherlock (inlang VS Code extension) inline annotations,
+  hovers, and message extraction for i18next projects, which were silently
+  broken by the plugin's static ide-extension `meta` shadowing Sherlock's
+  settings-injecting `addCustomApi` migration (reported and fixed upstream in
+  [opral/inlang#4368](https://github.com/opral/inlang/issues/4368)). Projects
+  already scaffolded with 6.2.0 can simply bump the `modules` URL in
+  `project.inlang/settings.json`.
+
+## 1.63.0
+
+- feat: **`init --inlang`** — `init` can now scaffold a ready-made
+  [inlang](https://inlang.com) project so inlang tooling (the
+  [Sherlock](https://inlang.com/m/r7kp499g/app-inlang-ideExtension) VS Code
+  extension, the [Fink](https://fink.inlang.com) web editor for translators,
+  and the [Paraglide](https://inlang.com/m/gerre34r/library-inlang-paraglideJs)
+  compiler) works directly on your existing translation files — the i18next
+  JSON stays the single source of truth, the scaffold is just the adapter.
+  The wizard asks (default: no), or pass `--inlang` to skip the question.
+  It emits a `project.inlang/settings.json` with `baseLocale`/`locales` from
+  your config and `plugin.inlang.i18next.pathPattern` derived from
+  `extract.output`: the namespaced object form when the layout uses
+  `{{namespace}}` (namespace names discovered from the primary language's
+  existing files, `translation` fallback on fresh projects), a plain pattern
+  for single-file layouts; the `{{lng}}` alias and Windows path separators
+  are normalized, and non-JSON layouts are skipped with a notice. It also
+  adds the Sherlock extension to `.vscode/extensions.json` recommendations —
+  created when missing, otherwise merged JSONC-aware (comments preserved,
+  nothing clobbered, unparseable files left untouched with a notice).
+  Idempotent: an existing `project.inlang/settings.json` is never
+  overwritten. Only `settings.json` is scaffolded by design — the directory
+  is the [unpacked (git-friendly)](https://inlang.com/docs/unpacked-project)
+  project form, and inlang tools generate and manage its remaining files
+  (`.gitignore`, `README.md`, `cache/`) on first use. The plugin module is
+  pinned to the exact verified `@inlang/plugin-i18next@6.2.0` (the first
+  release with full round-trip support for plurals, context, `_zero` and
+  ordinal keys) rather than a floating range: jsDelivr serves range aliases
+  like `@6` from edge caches that can lag releases by days and differ between
+  locations, which would make scaffolded projects non-reproducible across a
+  team — bump the `modules` URL in `settings.json` to pick up newer plugin
+  releases deliberately.
+
+## 1.62.0
+
+- feat: new **`localize`** supercommand — one command from hardcoded strings to
+  a fully localized app. It orchestrates the existing pieces in six steps:
+  detect (framework, TypeScript, existing i18next setup) → configuration
+  (`init` wizard on a missing config) → `instrument` (interactive by default,
+  with a dirty-git-tree guard and a Next.js App Router warning) → `extract` →
+  connect Locize (config / `LOCIZE_PROJECTID`+`LOCIZE_API_KEY` env vars /
+  guided signup) → `locize-sync --auto-translate true`, then waits for the
+  asynchronous AI translations to arrive, downloads them and prints the
+  `i18next-locize-backend` CDN wiring snippet. Safe to re-run (idempotent at
+  every step). Flags: `--dry-run`, `-y/--yes`, `--ci` (skips instrument unless
+  combined with `--yes`), `--skip-instrument`, `--skip-translate`,
+  `--skip-locize`, `--namespace <ns>`, `--update-values`,
+  `--cdn-type <standard|pro>`. Non-React stacks degrade gracefully: with a
+  configured stack plugin (e.g. `i18next-cli-vue`,
+  `i18next-cli-plugin-svelte`) the full flow runs; without one the instrument
+  step is skipped with guidance and the remaining steps still run. Apps using
+  inlang Paraglide are detected and never instrumented. Also exported as
+  `runLocalize()` for programmatic use.
+- feat: `localize --print-agent-prompt` prints a copy-paste prompt for AI
+  coding agents (Claude Code, Cursor, …) that performs the same steps via the
+  individual CLI commands — version-matched to the installed CLI.
+- feat: `locize-sync` gained `--auto-translate <true|false>`,
+  `--auto-translate-review <true|false>` and
+  `--auto-translate-languages <lng1,lng2>` pass-through flags (with matching
+  `locize.autoTranslate`, `locize.autoTranslateReview` and
+  `locize.autoTranslateLanguages` config options). Auto-translation is enabled
+  by default for new Locize projects and only fires when the reference
+  language is updated; the translation itself happens asynchronously on the
+  Locize side.
+- fix: the CJS build (`dist/cjs`) crashed with `ora is not a function` on any
+  spinner-using command (and similarly for other default-imported ESM-only
+  dependencies such as `inquirer`). Node's `require(esm)` returns the module
+  *namespace*, but rollup's default interop called it directly. The CJS output
+  now uses `interop: 'auto'`, which unwraps `.default` at runtime via the
+  `__esModule` marker. The published `bin` (ESM) was never affected.
+- feat: `localize` maps the "project not found" sync error on a project
+  without languages to actionable guidance (update locize-cli — newer versions
+  create the languages automatically during sync — or add languages in the
+  project settings).
+- docs/copy: new Locize projects no longer require adding target languages in
+  the UI or an admin-scoped API key — any write-capable key works and the
+  languages from your config are created automatically during the first sync
+  (locize-cli ≥ 12.3 together with the corresponding Locize API update). The
+  `localize` step-5 copy, the credential prompts and the agent prompt reflect
+  this.
+- fix: the `locize-*` commands now resolve credentials from the
+  `LOCIZE_PROJECTID`/`LOCIZE_PID`, `LOCIZE_API_KEY`/`LOCIZE_KEY`,
+  `LOCIZE_VERSION` and `LOCIZE_API_ENDPOINT` environment variables (after CLI
+  options and the `locize` config block) and always forward them as explicit
+  flags. Previously the env vars were left for locize-cli to pick up — but
+  locize-cli prefers a `~/.locize` config file over the environment, so a
+  stale `~/.locize` could silently redirect a sync/migrate to a different
+  project or API endpoint. A new `locize.apiEndpoint` config option is also
+  available for staging/self-hosted setups.
+
+## 1.61.1
+
+- fix: `locize-sync --src-lng-only` is now a `<true|false>` parameter instead of
+  a bare flag. locize-cli's underlying `--reference-language-only` already
+  defaults to `true`, so the old flag could only re-assert the default and there
+  was no way to opt out. You can now pass `--src-lng-only false` (or set
+  `locize: { sourceLanguageOnly: false }` in your config) to sync **all**
+  languages instead of the source language only. When the option is omitted,
+  nothing is forwarded and locize-cli's `true` default still applies
+  (issue [#267](https://github.com/i18next/i18next-cli/issues/267)).
+
+## 1.61.0
+
+- feat: the `status` command now also checks the **primary language**. A key
+  that is used in your code but absent from the primary language's translation
+  files (a typo, or `extract` was never run) is reported and causes a non-zero
+  exit code, on both `status` and `status <primaryLanguage>`. Empty-string
+  placeholders written by `extract` are treated as present and do not fail the
+  check, so only genuinely missing keys are flagged (issue [#266](https://github.com/i18next/i18next-cli/issues/266)).
+  - Upgrade note: if you previously added a "dummy" primary language so that
+    your real languages would all be checked as secondaries, you can remove it
+    now. The primary language is checked natively, so the dummy locale would
+    otherwise be reported as missing every key.
+
+## 1.60.0
+
+- feat: the `i18next-instrument-ignore` directive now suppresses the **entire
+  JSX element** that follows it (its opening tag, nested children, and closing
+  tag) for both the `lint` and `instrument` commands — not just the single
+  physical line after the comment. This makes one directive enough to ignore
+  multi-line elements (e.g. `<div … css={…}>…</div>`) and elements with nested
+  children. The `i18next-instrument-ignore-next-line` variant keeps its
+  line-precise behaviour, and the directive is now documented in the README.
+  Thanks to [@mindplay-dk](https://github.com/mindplay-dk) for the report
+  [#265](https://github.com/i18next/i18next-cli/issues/265).
+
+## 1.59.1
+
+- fix: `loadTranslationFile` no longer silently treats an unparseable
+  JSON/JSON5/YAML translation file as empty. Previously a parse failure was
+  swallowed (logged as a warning) and returned as `null`, which callers coalesce
+  to `{}` — so re-running the extractor over a corrupt file (e.g. an `en.json`
+  with a leftover merge-conflict marker, a common hazard when a watcher
+  re-extracts on save) would overwrite it and silently destroy its contents.
+  Parsing a structured data file that exists on disk but cannot be parsed now
+  throws, stopping the command with an error instead of clobbering good data.
+  Loading `.ts`/`.js` resource files stays lenient (degrades to `null`) so this
+  does not regress [#59](https://github.com/i18next/i18next-cli/issues/59).
+  Thanks to [@TenPotatoes](https://github.com/TenPotatoes) for the report.
+  Closes [#264](https://github.com/i18next/i18next-cli/issues/264).
+
+## 1.59.0
+
+- feat: add a `--ci` flag to the `types` command. It generates the TypeScript
+  definitions in memory and compares them against what is on disk **without
+  writing anything**, exiting with a non-zero status code (and listing the
+  affected files) when they are out of date. This lets CI — and developers
+  locally / in pre-commit hooks — verify the committed `resources.d.ts` is up
+  to date with a single command instead of scripting `types` + `git diff`. A
+  missing main definition file (`i18next.d.ts`) is also treated as out of date;
+  its user-editable contents are not diffed. `--ci` cannot be combined with
+  `--watch`. Thanks to [@pjrobertson](https://github.com/pjrobertson) for the
+  contribution. Closes [#261](https://github.com/i18next/i18next-cli/issues/261).
+
+## 1.58.3
+
+- fix: CLI commands no longer crash when the project has an incompatible
+  `react-i18next` / `i18next` pair. `react-i18next@17.0.8` imports
+  `keyFromSelector` from `i18next` (added in i18next 26.2.0); when an older
+  `i18next` was resolved (e.g. a stale transitive dependency), the extractor's
+  top-level `import … from 'react-i18next'` threw while loading, taking down
+  *every* command (`status`, `extract`, …). `react-i18next` is now loaded
+  lazily and defensively — only when serializing `<Trans>` children — so
+  unrelated commands always work and Trans serialization degrades gracefully
+  with a warning instead of crashing. `i18next` is also now declared as a
+  direct dependency (`^26.3.0`, matching react-i18next's peer requirement) so
+  package managers that don't auto-install peers (e.g. pnpm) get a compatible
+  copy. Fixes [#260](https://github.com/i18next/i18next-cli/issues/260).
+
+## 1.58.2
+
+- fix: `instrument` no longer breaks multi-line imports when injecting the
+  `useTranslation` import. The insertion point was located with a per-line
+  regex (`/^import\s.+$/`), so a multi-line `import {\n  ...\n} from '...'`
+  matched only its first line (`import {`) and the new import was spliced
+  inside the braces, producing invalid code. The end of each import
+  statement is now found with a brace/string-aware scan.
+  Fixes [#259](https://github.com/i18next/i18next-cli/issues/259).
+
+## 1.58.1
+
+- fix: `types` now accepts `.yaml`/`.yml` (and `.json5`) input files. The
+  command's internal `loadFile` previously fell through to `JSON.parse` for
+  any non-TS/JS file, so YAML/JSON5 translation sources threw a
+  `SyntaxError` even though `i18next-resources-for-ts` supports them and
+  `yaml` / `@croct/json5-parser` are already direct dependencies.
+  Fixes [#258](https://github.com/i18next/i18next-cli/issues/258).
+
+## 1.58.0
+
+- feat: `extract` gains a `--with-types` flag. When set, the TypeScript
+  definitions are regenerated in the same process after extraction (on
+  every re-run in `--watch` mode) whenever translation files actually
+  changed. This removes the need to run `extract -w` and `types -w` as
+  two parallel processes — which suffered from a chokidar mid-write race
+  where the types output ended up one cycle behind the JSON files.
+  Skipped under `--dry-run` (no files written) and `--ci` (exits before
+  this point).
+- fix: `types --watch` now uses chokidar's `awaitWriteFinish` option, so
+  the watcher no longer triggers mid-write when another process (e.g.
+  `extract -w`) is rewriting the same translation files. Hardens the
+  existing two-process workflow for users who keep it.
+  Fixes [#257](https://github.com/i18next/i18next-cli/issues/257).
+
+## 1.57.0
+
+- feat: `init` wizard now asks "Translation backend?" with three choices —
+  local files (default, unchanged behaviour), Locize, or other/skip. Picking
+  Locize opens the signup page in the user's default browser, prompts for
+  Project ID and (optional) API key, and writes a `locize` block into the
+  generated config matching the shape consumed by `locize-sync` /
+  `locize-download` / `locize-migrate`. Auto-translate is intentionally not
+  written into the config — it's a Locize project setting toggled in the
+  web UI — and the closing message points users there. No telemetry, no
+  tracking parameters; only the existing `?from=i18next-cli+init+wizard`
+  attribution on the signup URL.
+
+## 1.56.12
+
+- feat: `types.enableSelector` now accepts `'strict'`, mirroring i18next's
+  runtime `enableSelector: 'strict'` (≥ 26.1.0). When set, the extractor
+  applies the leading-namespace rewrite uniformly: a selector path's first
+  segment matching any namespace in the hook's scope — primary or secondary,
+  single- or multi-ns — is rewritten to `ns:rest` so the key routes to the
+  right namespace file. Same applies to `useTranslation('only')` paths
+  written as `$.only.foo` (strict-mode shape). Generated `i18next.d.ts`
+  emits `enableSelector: "strict"` accordingly.
+
+## [1.56.11](https://github.com/i18next/i18next-cli/compare/v1.56.10...v1.56.11) - 2026-05-07
+
+- `extract` and `status` now mirror i18next's runtime selector rule
+  (v25.8.19) for multi-namespace `useTranslation([nsA, nsB, ...])`
+  hooks. When a selector path's first segment matches a *secondary*
+  namespace from the hook's array, the key is routed to that
+  namespace's file instead of the primary. Single-namespace hooks and
+  primary-prefixed paths are unaffected — the primary namespace is
+  never rewritten, matching `i18next/src/selector.js` exactly.
+  Fixes [#256](https://github.com/i18next/i18next-cli/issues/256).
+
+## [1.56.10](https://github.com/i18next/i18next-cli/compare/v1.56.9...v1.56.10) - 2026-05-06
+
+- `lint` now sets `type: 'hardcoded'` on hardcoded-string issues. The
+  `LintIssue` type already declared a `'hardcoded' | 'interpolation'`
+  union, but `findHardcodedStrings` only emitted `text` and `line`,
+  leaving `type` undefined. Consumers (including `lintOnResult`
+  plugins) had to rely on `type !== 'interpolation'`, which would
+  silently misclassify any future issue category. The discriminant is
+  now populated so `issue.type === 'hardcoded'` works as advertised.
+  Fixes [#255](https://github.com/i18next/i18next-cli/issues/255).
+
+## [1.56.9](https://github.com/i18next/i18next-cli/compare/v1.56.8...v1.56.9) - 2026-04-29
+
+- `extract` now propagates namespace/keyPrefix from a
+  `useTranslationNames`-listed call when its result is stored on a
+  class field and later destructured inside a method, e.g.
+  `#ctx = getTranslationContext('settings')` followed by
+  `const { t } = this.#ctx` (or `this.#ctx()`) inside a class method.
+  Previously, only top-level `VariableDeclarator` initializers were
+  tracked, so `t('hello')` reached through `this.#ctx` was extracted
+  without its namespace. The scope manager now keeps a per-class
+  field registry (public and private fields, including the `()`
+  invocation form) and resolves `this.<field>` references against
+  it during destructuring. The non-class form
+  `const { t } = getTranslationContext(...)` is unchanged. Fixes
+  [#251](https://github.com/i18next/i18next-cli/issues/251).
+
+## [1.56.8](https://github.com/i18next/i18next-cli/compare/v1.56.7...v1.56.8) - 2026-04-29
+
+- `extract --sync-primary` now updates `<Trans>` defaults when the key
+  contains an underscore but is not actually a plural or context
+  variant. Previously, the "is this a variant key?" check used a loose
+  `key.includes(pluralSeparator) || key.includes(contextSeparator)`
+  heuristic, which (with the default `_` separator) misclassified
+  ordinary keys like `abc_123` as variants and preserved the existing
+  translation instead of adopting the new default from code. The check
+  now treats a key as a synthesized plural variant only when the
+  extractor flagged it with `hasCount` AND its suffix matches a CLDR
+  plural form; context variants are unaffected because they were
+  already handled by the derived-default detection. Fixes
+  [#250](https://github.com/i18next/i18next-cli/issues/250).
+
+## [1.56.7](https://github.com/i18next/i18next-cli/compare/v1.56.6...v1.56.7) - 2026-04-23
+
+- `extract` no longer mis-extracts arbitrary method calls on a
+  scoped `i18n` (or other `useTranslation`-derived) object as
+  translation keys. Previously, code like
+  `const { i18n } = useTranslation(); i18n.language.substring(0, 2)` or
+  `i18n.languages.join('|')` leaked bogus entries such as `"0": "0"`
+  and `"|": "|"` into the output. The scope-propagation fallback
+  introduced in [#239](https://github.com/i18next/i18next-cli/pull/239)
+  ran before the configured `functions` pattern check, so any call
+  whose callee had an in-scope prefix was promoted to a translation
+  call, bypassing the `['t', '*.t']` match entirely. The fallback
+  now runs after the pattern check: `*.t` consistently means "member
+  expression whose final property is literally `t`", and scope
+  (namespace/keyPrefix) is only propagated into calls that already
+  matched a configured pattern. The #239 behaviour is preserved —
+  `emailError.t(...)` with `const emailError = useTranslateKeyState('auth')`
+  still picks up its namespace, including through deeper chains like
+  `wrapper.i18n.t(...)`. Fixes
+  [#249](https://github.com/i18next/i18next-cli/pull/249).
+
+## [1.56.6](https://github.com/i18next/i18next-cli/compare/v1.56.5...v1.56.6) - 2026-04-23
+
+- `extract --sync-all --trust-derived` no longer resets locale-specific
+  plural forms on every run. When a secondary language has a CLDR
+  cardinal/ordinal category that the primary language does not (e.g.
+  French `_many` vs English `one`/`other`), the primary file will never
+  contain that key — but the divergence check was reading that
+  expected absence as "primary diverged from the default" and clearing
+  the translator's value on each run. The check now recognises
+  locale-specific plural variants and preserves their existing
+  secondary translations. Fixes
+  [#248](https://github.com/i18next/i18next-cli/issues/248).
+
+## [1.56.5](https://github.com/i18next/i18next-cli/compare/v1.56.4...v1.56.5) - 2026-04-22
+
+- `extract` now walks both branches of branching selector bodies, so
+  keys referenced inside ternaries and short-circuit logicals are no
+  longer dropped. Previously a selector like
+  `t(($) => isPinned ? $.notes.unpinned : $.notes.pinned)` produced no
+  keys at all (both `notes.pinned` and `notes.unpinned` got pruned by
+  `removeUnusedKeys`). The selector walker now recurses into
+  `ConditionalExpression` (`a ? b : c`) and short-circuit logical
+  forms (`||`, `&&`, `??`, emitted by SWC as either
+  `LogicalExpression` or `BinaryExpression`), taking the union of key
+  paths from each branch. Common wrappers (`ParenthesisExpression`,
+  `TsAsExpression`, `TsSatisfiesExpression`, `TsNonNullExpression`,
+  `TsConstAssertion`) are transparently unwrapped. Fixes
+  [#247](https://github.com/i18next/i18next-cli/issues/247).
+- Trimmed the `<Trans>` bare-identifier diagnostic to drop the
+  confusing trailing suggestion "or inline the value if it isn't meant
+  to be translated." Inlining a literal value (e.g.
+  `<Trans>Hello world <b>meow</b></Trans>`) is still translatable — it
+  just isn't parametrized — so the clause was misleading. The
+  diagnostic now points at the `{{x}}` + `values={{ x }}` fix only.
+  Follow-up to [#246](https://github.com/i18next/i18next-cli/issues/246).
+
+## [1.56.4](https://github.com/i18next/i18next-cli/compare/v1.56.3...v1.56.4) - 2026-04-22
+
+- The `<Trans>` bare-identifier diagnostic added in 1.56.3 now uses
+  `logger.error` and is prefixed with `Error:`, matching the convention
+  established in
+  [#200](https://github.com/i18next/i18next-cli/issues/200) so build
+  tooling that watches for errors (or grep for `Error:`) can treat it
+  as fatal. Behaviour and message are otherwise unchanged.
+  Follow-up to [#246](https://github.com/i18next/i18next-cli/issues/246).
+
+## [1.56.3](https://github.com/i18next/i18next-cli/compare/v1.56.2...v1.56.3) - 2026-04-22
+
+- `extract` now resolves constant identifiers passed as the namespace or
+  keyPrefix argument to `i18next.getFixedT(...)`. Previously, only string
+  literals were recognised, so
+  `const NS = "my-ns"; const t = i18next.getFixedT("en", NS, "prefix")`
+  silently fell back to the default namespace, while the equivalent
+  `useTranslation(NS)` form worked correctly. The `getFixedT` handlers
+  now reuse the same resolution logic as `useTranslation` (local/shared
+  string constants via `Identifier`, constant-object property access via
+  `MemberExpression`, interpolation-free `TemplateLiteral`, and TS
+  wrappers like `as const` / `satisfies`), so both forms behave
+  consistently. Fixes [#245](https://github.com/i18next/i18next-cli/issues/245).
+- `extract` now warns when a `<Trans>` component contains a bare
+  identifier JSX child such as `<Trans>Hello <b>{cat}</b></Trans>`.
+  react-i18next inlines the value at runtime (producing a key like
+  `"Hello <1>meow</1>"`), but the extractor serialises the identifier
+  name as `"Hello <1>{{cat}}</1>"` — the two never match, and even with
+  an explicit `i18nKey` the placeholder cannot be interpolated without a
+  `values={{ cat }}` prop, so it renders literally. The warning points
+  users at the correct `{{cat}}` double-brace form with a `values` prop.
+  Extraction output is unchanged so existing projects that paired the
+  `{{cat}}` output with a matching `values` prop keep working.
+  Addresses [#246](https://github.com/i18next/i18next-cli/issues/246).
+
+## [1.56.2](https://github.com/i18next/i18next-cli/compare/v1.56.1...v1.56.2) - 2026-04-22
+
+- `lint` now detects hardcoded strings wrapped in JSX expression
+  containers. Previously, string literals like `<div>{"Hello"}</div>` or
+  braced attribute values like `<img alt={"Logo"} />` were silently
+  skipped because the walker only inspected `StringLiteral` nodes whose
+  direct parent was a `JSXAttribute`. The linter now also recognises
+  `StringLiteral` nodes whose parent is a `JSXExpressionContainer`,
+  treating them as JSX child text or attribute values depending on the
+  grandparent, and applying the same `acceptedTags` / `acceptedAttributes`
+  / `ignoredTags` / `i18next-instrument-ignore` rules as raw text.
+  Fixes [#244](https://github.com/i18next/i18next-cli/issues/244).
+
+## [1.56.1](https://github.com/i18next/i18next-cli/compare/v1.56.0...v1.56.1) - 2026-04-22
+
+- `status` now detects keys reachable only through `$t(...)` nested
+  references in the primary translation file. Previously, keys like
+  `boys_one`/`boys_other` — referenced only from
+  `"girlsAndBoys": "$t(boys, {\"count\": ...})"` — were preserved by
+  `extract` but never included in the `status` check, so empty values in
+  secondary locales were silently ignored. Status now scans primary
+  translation values for `$t(...)` references and includes the referenced
+  keys (plus their per-locale plural and context variants) in the report,
+  so translation gaps surface correctly.
+  Follow-up to [#241](https://github.com/i18next/i18next-cli/issues/241).
+
+## [1.56.0](https://github.com/i18next/i18next-cli/compare/v1.55.0...v1.56.0) - 2026-04-21
+
+- Preserve keys that are only referenced through `$t(...)` nested references
+  inside existing translation values. Previously, when `removeUnusedKeys` was
+  enabled, keys like `boys_one`/`boys_other` referenced only from
+  `"girlsAndBoys": "$t(boys, {\"count\": {{boys}} })"` were deleted because
+  the AST-based extractor never sees them. The extractor now also scans
+  existing translation values, treats referenced keys (and their
+  plural / context variants) as used, and — for secondary locales — expands
+  them into the correct per-locale CLDR plural skeleton on first extract.
+  Fixes [#241](https://github.com/i18next/i18next-cli/issues/241).
+- Propagate context variants from the primary locale to secondary locales
+  when `preserveContextVariants` is enabled. Previously, dynamic context
+  usage like `t('exportType', { context: type })` preserved the variants
+  (`exportType_gas`, `exportType_water`) only in the primary language file;
+  secondary languages never received them. They are now copied to every
+  locale with empty placeholders so translators and `sync` see the same key
+  skeleton everywhere. Existing secondary values are left untouched.
+  Fixes [#242](https://github.com/i18next/i18next-cli/issues/242).
+- `status` now detects context variants when source code uses a dynamic
+  context value. Previously, `t('key', { context: type })` registered only
+  the base key and tagged it as accepting context, so status had no way to
+  count the actual variants (`key_a`, `key_b`) — empty values in secondary
+  locales were silently ignored. Status now scans the primary translation
+  file for context variants of each accepting-context base key and includes
+  them in the per-locale translation report.
+  Fixes [#243](https://github.com/i18next/i18next-cli/issues/243).
+
+## [1.55.0](https://github.com/i18next/i18next-cli/compare/v1.54.2...v1.55.0) - 2026-04-20
+
+- Infer function return types from the body when no explicit return-type
+  annotation is present, so `t(fn())` and `` t(`...${x}...`) `` with
+  `const x = fn()` expand to all statically-resolvable return values. Works
+  across files via a shared cross-file table populated during the pre-scan
+  pass (alongside enums), so imported functions resolve just like in-file
+  ones. Explicit annotations remain authoritative: `: string` still returns
+  no keys rather than falling back to body inference.
+- Print a per-file diff (added / removed / changed keys) when `extract --ci`
+  fails because files would be updated. Makes CI failures actionable without
+  needing to reproduce locally.
+  Thanks to [@LudvigHz](https://github.com/LudvigHz) for both changes
+  ([#240](https://github.com/i18next/i18next-cli/pull/240)).
+
+## [1.54.2](https://github.com/i18next/i18next-cli/compare/v1.54.1...v1.54.2) - 2026-04-18
+
+- Propagate `defaultNs` and `keyPrefix` from a custom translation hook to
+  inner `t()` calls accessed via a member expression (e.g.
+  `const obj = useMyHook('auth'); obj.t('key')`). Previously the scope was
+  stored on the outer variable but the call-site lookup used the full
+  `obj.t` name and missed it, causing keys to fall back to the default
+  namespace. The lookup now also tries the object part(s) of the member
+  expression.
+  Fixes [#239](https://github.com/i18next/i18next-cli/issues/239).
+
+## [1.54.1](https://github.com/i18next/i18next-cli/compare/v1.54.0...v1.54.1) - 2026-04-17
+
+- Fix `--sync-all` unexpectedly clearing secondary locale translations for
+  keys with explicit defaults (e.g. `t('my-key', 'my message')`) when the
+  code-provided default still matches the primary locale value. Secondary
+  translations are now only reset when the primary value has actually
+  diverged from the code default, matching the behavior already in place
+  for trusted derived defaults.
+  Fixes [#235](https://github.com/i18next/i18next-cli/issues/235).
+
+## [1.54.0](https://github.com/i18next/i18next-cli/compare/v1.53.2...v1.54.0) - 2026-04-17
+
+- Emit the generated `Resources` interface as a single combined
+  `export default interface Resources { ... }` declaration, and import it in
+  the generated i18next module augmentation file using `import type`. This
+  makes the generated type files compatible with TypeScript's
+  `verbatimModuleSyntax` compiler option. The interface's type identity is
+  unchanged, so consumers importing `Resources` from the resources file
+  continue to work without modification.
+  Fixes [#238](https://github.com/i18next/i18next-cli/issues/238).
+- Bump `i18next-resources-for-ts` to `2.1.0` for the new interface output
+  format.
+
+## [1.53.2](https://github.com/i18next/i18next-cli/compare/v1.53.1...v1.53.2) - 2026-04-14
+
+- Add `locale` and `namespace` fields to the `TranslationResult` object passed
+  to the `afterSync` plugin hook, so plugins no longer need to reverse-engineer
+  these values from the file path.
+  Relates to [#237](https://github.com/i18next/i18next-cli/issues/237).
+
+## [1.53.1](https://github.com/i18next/i18next-cli/compare/v1.53.0...v1.53.1) - 2026-04-14
+
+- Fix selector API with dynamic bracket notation (e.g.
+  `t(($) => $.table.columns[field])`) incorrectly treating keys as unused
+  and removing them during extraction. Dynamic bracket expressions are now
+  resolved via the expression resolver, and function parameter type
+  annotations (e.g. `field: "name" | "age"`) are captured so the resolver
+  can enumerate all possible key values.
+  Fixes [#234](https://github.com/i18next/i18next-cli/issues/234).
+
+## [1.53.0](https://github.com/i18next/i18next-cli/compare/v1.52.1...v1.53.0) - 2026-04-14
+
+- Add optional `types.basePath` configuration to support nested namespaces in
+  TypeScript type generation. When set, namespaces are derived from the file's
+  path relative to `basePath` instead of just the filename, so
+  `locales/en/dashboard/user.json` produces namespace `"dashboard/user"` instead
+  of `"user"`. When `basePath` is omitted, existing behavior is preserved.
+  Contributed by [@camerondubas](https://github.com/camerondubas) in
+  [#236](https://github.com/i18next/i18next-cli/pull/236).
+- Add a warning when `types.basePath` is misconfigured and translation files
+  fall outside the specified base directory.
+- Use the internal logger instead of `console.warn` for warnings in the type
+  generator.
+
+## [1.52.1](https://github.com/i18next/i18next-cli/compare/v1.52.0...v1.52.1) - 2026-04-13
+
+- Fix `extract --sync-all --trust-derived` resetting secondary locale values
+  to empty strings even when the trusted derived default was already in sync in
+  the primary locale. Secondary translations are now only cleared when the
+  primary locale would actually be updated by the sync.
+  Follow-up to [#235](https://github.com/i18next/i18next-cli/issues/235).
+
+## [1.52.0](https://github.com/i18next/i18next-cli/compare/v1.51.9...v1.52.0) - 2026-04-13
+
+- Add `extract --trust-derived` as an opt-in companion to `--sync-primary`
+  and `--sync-all`. When enabled, the extractor also trusts default values
+  inferred from keys, including plain key-as-text usage such as
+  `t('Hello world')` and `keyPrefix`-derived values, while preserving the
+  existing strict sync behavior by default.
+  Follows up on [#235](https://github.com/i18next/i18next-cli/issues/235).
+
+## [1.51.9](https://github.com/i18next/i18next-cli/compare/v1.51.8...v1.51.9) - 2026-04-13
+
+- Fix `extract --sync-all` producing different results on repeated runs when a
+  key has a derived default value (including `keyPrefix`-derived keys).
+  Derived defaults are now detected consistently in both the initial write and
+  existing-value sync paths, so rerunning the same command no longer rewrites
+  the primary locale unexpectedly.
+  Fixes [#235](https://github.com/i18next/i18next-cli/issues/235).
+
+## [1.51.8](https://github.com/i18next/i18next-cli/compare/v1.51.7...v1.51.8) - 2026-04-13
+
+- Fix selector API with dynamic bracket notation (e.g.
+  `t(($) => $.table.columns[field])`) incorrectly treating keys as unused
+  and removing them during extraction. Dynamic bracket expressions are now
+  resolved via the expression resolver, so typed variables
+  (`const field: "name" | "age"`) and const-initialised variables
+  (`const field = "name"`) are correctly expanded into all possible keys.
+  Fixes [#234](https://github.com/i18next/i18next-cli/issues/234).
+
+## [1.51.7](https://github.com/i18next/i18next-cli/compare/v1.51.6...v1.51.7) - 2026-04-07
+
+- Fix `--sync-all` not clearing secondary locale translations when
+  `mergeNamespaces` is enabled. The `syncAll` flag was not being passed
+  through in the merged namespaces code path.
+  Fixes [#233](https://github.com/i18next/i18next-cli/issues/233).
+
+## [1.51.6](https://github.com/i18next/i18next-cli/compare/v1.51.5...v1.51.6) - 2026-04-03
+
+- Add `getT` and `useT` to the default `useTranslationNames` so that
+  `next-i18next` v16 App Router hooks are recognized out of the box.
+  Keys from `useT('ns')` and `await getT('ns')` are now correctly
+  extracted into the specified namespace instead of falling back to
+  `defaultNS`.
+  Fixes [#232](https://github.com/i18next/i18next-cli/issues/232).
+
+## [1.51.5](https://github.com/i18next/i18next-cli/compare/v1.51.4...v1.51.5) - 2026-03-30
+
+- Fix extractor using only the initializer value instead of the full enum type
+  when a variable has both a type annotation and an initializer
+  (e.g. `const status: Status = Status.New` now correctly extracts all enum
+  values, not just `"new"`).
+  Fixes [#210 (comment)](https://github.com/i18next/i18next-cli/issues/210#issuecomment-4153581609).
+
+## [1.51.4](https://github.com/i18next/i18next-cli/compare/v1.51.3...v1.51.4) - 2026-03-27
+
+- Updated `react-i18next` to v17.
+  `transKeepBasicHtmlNodesFor` now correctly preserves HTML tag names when
+  children contain interpolations or mixed content (e.g.
+  `<strong>{{name}}</strong>` instead of `<1>{{name}}</1>`).
+  Fixes [#230](https://github.com/i18next/i18next-cli/issues/230).
+
+## [1.51.3](https://github.com/i18next/i18next-cli/compare/v1.51.2...v1.51.3) - 2026-03-26
+
+- Silently skip directories that happen to have file-like extensions (e.g. a
+  directory named `Foo.tsx`) instead of logging a misleading
+  "Skipping file due to error" warning.
+  Fixes [#229](https://github.com/i18next/i18next-cli/issues/229).
+
+## [1.51.2](https://github.com/i18next/i18next-cli/compare/v1.51.1...v1.51.2) - 2026-03-26
+
+- Fix `extract` function returning default namespace keys at top level instead of
+  under `"translation"` when `nsSeparator: false` is used with multiple namespaces.
+  The `nsSeparator: false` top-level collapsing (#223) now only applies when there
+  are no other explicit namespaces present.
+  Fixes [#227](https://github.com/i18next/i18next-cli/issues/227).
+
+## [1.51.1](https://github.com/i18next/i18next-cli/compare/v1.51.0...v1.51.1) - 2026-03-26
+
+- Fix `allPluralForms` to only generate plural forms needed by at least one
+  configured locale (union of all locales' CLDR categories) instead of always
+  generating all 6 forms. Also fixes defaultValues not being applied consistently
+  to the extra plural forms.
+  Fixes [#226](https://github.com/i18next/i18next-cli/issues/226).
+
+## [1.51.0](https://github.com/i18next/i18next-cli/compare/v1.50.8...v1.51.0) - 2026-03-25
+
+- Add `allPluralForms` option to force generation of all 6 CLDR plural forms
+  (`zero`, `one`, `two`, `few`, `many`, `other`) for every language, including
+  the primary language. This is useful when secondary languages need plural forms
+  that the primary language doesn't have, and you want a consistent set of keys
+  across all locales. Set `extract.allPluralForms: true` in your config to enable.
+  Addresses [#226](https://github.com/i18next/i18next-cli/issues/226).
+
+## [1.50.8](https://github.com/i18next/i18next-cli/compare/v1.50.7...v1.50.8) - 2026-03-25
+
+- Fix crash with custom locale codes (e.g. `'E'`, `'F'`) that are not valid
+  BCP 47 language tags. `Intl.PluralRules` now falls back to English plural
+  rules for unrecognized locales instead of throwing a `RangeError`.
+  Fixes [#225](https://github.com/i18next/i18next-cli/issues/225).
+
+## [1.50.7](https://github.com/i18next/i18next-cli/compare/v1.50.6...v1.50.7) - 2026-03-25
+
+- Fix incomplete [#223](https://github.com/i18next/i18next-cli/issues/223) fix:
+  keys from `useTranslation()` (no args) have `nsIsImplicit: false` after parser
+  resolution, so the previous `nsIsImplicit` check did not catch them. The merged-path
+  loop now treats any defaultNS-keyed bucket as top-level when `nsSeparator: false`,
+  without affecting non-merged layouts that rely on namespace-based file routing.
+
+## [1.50.6](https://github.com/i18next/i18next-cli/compare/v1.50.5...v1.50.6) - 2026-03-25
+
+- Fix merged single-file layout with `nsSeparator: false` misdetecting top-level
+  object keys as namespace buckets. The `existingIsNamespaced` check now respects
+  `nsSeparator: false`, and implicit-namespace keys are correctly routed to the
+  top level instead of being wrapped under the `defaultNS` name.
+  Fixes [#223](https://github.com/i18next/i18next-cli/issues/223).
+
+- Fix `sort: false` not being respected when `removeUnusedKeys: true`. The
+  rebuild from an empty object lost the original key order; the output is now
+  reordered to match the existing file, with new keys appended at the end.
+  Fixes [#224](https://github.com/i18next/i18next-cli/issues/224).
+
+## [1.50.5](https://github.com/i18next/i18next-cli/compare/v1.50.4...v1.50.5) - 2026-03-24
+
+- Suppress promotional messages when `--quiet` flag is used. The `extract`
+  and `sync` commands now correctly silence all non-essential output in quiet mode.
+  Fixes [#222](https://github.com/i18next/i18next-cli/issues/222).
+
+## [1.50.4](https://github.com/i18next/i18next-cli/compare/v1.50.3...v1.50.4) - 2026-03-22
+
+- Fix namespaces containing spaces (e.g. `useTranslation(['Generic category'])` or
+  `{ ns: 'Example two' }`) being incorrectly rejected by the natural-language
+  heuristic and merged back into the key. The check now only applies when the
+  namespace was derived from splitting a key string by `nsSeparator`, not when it
+  was explicitly provided. Fixes [#221](https://github.com/i18next/i18next-cli/issues/221).
+
+## [1.50.3](https://github.com/i18next/i18next-cli/compare/v1.50.2...v1.50.3) - 2026-03-16
+
+- Improve `status` output to distinguish between **untranslated** keys (present
+  in the file with an empty value — needs translation) and **absent** keys
+  (missing from the file entirely — probably structural problem). Both still cause a
+  non-zero exit. Addresses [#220](https://github.com/i18next/i18next-cli/issues/220).
+
+## [1.50.2](https://github.com/i18next/i18next-cli/compare/v1.50.1...v1.50.2) - 2026-03-16
+
+- try to address [#218](https://github.com/i18next/i18next-cli/issues/218) by updating `i18next-resources-for-ts` dependency
+
+## [1.50.1](https://github.com/i18next/i18next-cli/compare/v1.50.0...v1.50.1) - 2026-03-13
+
+- Improve Non-JS/TS file support via `onLoad` plugin hook ([#217](https://github.com/i18next/i18next-cli/issues/217))
+  - A warning is emitted when a non-native extension is explicitly listed in the input glob patterns (e.g. `src/**/*.{ts,svelte}`) but no plugin handled it, this helps catch forgotten or misconfigured plugins early
+
+## [1.50.0](https://github.com/i18next/i18next-cli/compare/v1.49.7...v1.50.0) - 2026-03-13
+
+### Added
+- Non-JS/TS file support via `onLoad` plugin hook ([#217](https://github.com/i18next/i18next-cli/issues/217))
+  - Plugins can now return transformed JS/TS code from `onLoad` for any file type (e.g. `.svelte`, `.vue`), and the extractor will parse it correctly using TSX syntax
+  - Files with unsupported extensions that no plugin handles are now silently skipped instead of throwing an `ExtractorError`
+  - The `onLoad` return type now explicitly allows `undefined` (pass-through) in addition to `string`, matching the documented behaviour
+
+### Fixed
+- `Plugin.onLoad` TypeScript signature corrected to `MaybePromise<string | undefined>` — returning `undefined` to opt out of transformation was always the intended pattern but the type incorrectly disallowed it
+
+## [1.49.7](https://github.com/i18next/i18next-cli/compare/v1.49.6...v1.49.7) - 2026-03-12
+
+- fix: sync and extract --ci produce inconsistent plural key ordering in JSON locale files [#216](https://github.com/i18next/i18next-cli/issues/216)
+
+## [1.49.6](https://github.com/i18next/i18next-cli/compare/v1.49.5...v1.49.6) - 2026-03-10
+
+- fix: sync clears locale-specific plural forms like _many in secondary locales, causing status to report missing translations [#215](https://github.com/i18next/i18next-cli/issues/215)
+
+## [1.49.5](https://github.com/i18next/i18next-cli/compare/v1.49.4...v1.49.5) - 2026-03-10
+
+- updated dependencies
+
+## [1.49.4](https://github.com/i18next/i18next-cli/compare/v1.49.3...v1.49.4) - 2026-03-08
+
+- improve extractor regarding "resolve namespace from const/identifier expressions" [#209](https://github.com/i18next/i18next-cli/issues/209)
+- improve extractor regarding "support TS type-aware resolution for finite dynamic keys (template unions, const maps, helper returns)" [#210](https://github.com/i18next/i18next-cli/issues/210)
+
+## [1.49.3](https://github.com/i18next/i18next-cli/compare/v1.49.2...v1.49.3) - 2026-03-05
+
+- fix: disablePlurals flag ignored when extracting languages [#212](https://github.com/i18next/i18next-cli/issues/212)
+
+## [1.49.2](https://github.com/i18next/i18next-cli/compare/v1.49.1...v1.49.2) - 2026-03-05
+
+- Fixed: add file extensions to all imports (for d.ts files) ([#137](https://github.com/i18next/i18next-cli/issues/137)) [#211](https://github.com/i18next/i18next-cli/pull/211)
+
+## [1.49.1](https://github.com/i18next/i18next-cli/compare/v1.49.0...v1.49.1) - 2026-03-05
+
+- **Extractor ([#209](https://github.com/i18next/i18next-cli/issues/209)):** `t('key', { ns: IDENTIFIER })` now correctly resolves the namespace when `ns` is a `const` variable, matching the already-supported `useTranslation(IDENTIFIER)` pattern
+- **Extractor ([#210](https://github.com/i18next/i18next-cli/issues/210)):** `as const` array literals (`['a', 'b'] as const`) are now captured and their values expanded when used in `.map()` / `.forEach()` callbacks
+- **Extractor ([#210](https://github.com/i18next/i18next-cli/issues/210)):** `(typeof ARRAY)[number]` indexed access types now resolve correctly through `TsParenthesizedType` wrappers emitted by SWC
+- **Extractor ([#210](https://github.com/i18next/i18next-cli/issues/210)):** `declare const x: TypeAlias` and `useState<TypeAlias>()` destructuring patterns now resolve after their referenced type alias is captured, fixing ordering-dependent failures
+- **Extractor ([#210](https://github.com/i18next/i18next-cli/issues/210)):** Exported `as const` arrays and type aliases are now shared across files, enabling cross-file resolution of imported constants and type aliases
+
+## [1.49.0](https://github.com/i18next/i18next-cli/compare/v1.48.1...v1.49.0) - 2026-03-05
+
+- Extractor: resolve namespace from const/identifier expressions without custom plugins [#209](https://github.com/i18next/i18next-cli/issues/209)
+- Extractor: support TS type-aware resolution for finite dynamic keys (template unions, const maps, helper returns) [#210](https://github.com/i18next/i18next-cli/issues/210)
+
+## [1.48.1](https://github.com/i18next/i18next-cli/compare/v1.48.0...v1.48.1) - 2026-03-04
+
+- Extractor: Resolve and safe constants cross-files [#207](https://github.com/i18next/i18next-cli/pull/207)
+
+## [1.48.0](https://github.com/i18next/i18next-cli/compare/v1.47.12...v1.48.0) - 2026-03-04
+
+- feat(plugin): add `onKeySubmitted` hook to observe every key extraction before deduplication [#206](https://github.com/i18next/i18next-cli/issues/206)
+- feat(extract): add `warnOnConflicts` option to detect conflicting default values for the same key (`true` / `'warn'` to log, `'error'` to throw)
+
+## [1.47.12](https://github.com/i18next/i18next-cli/compare/v1.47.11...v1.47.12) - 2026-03-04
+
+- Extractor: Handle object props as namespace [#205](https://github.com/i18next/i18next-cli/pull/205)
+
+## [1.47.11](https://github.com/i18next/i18next-cli/compare/v1.47.10...v1.47.11) - 2026-03-03
+
+- Handle typed expressions in extractor [#204](https://github.com/i18next/i18next-cli/pull/204)
+
+## [1.47.10](https://github.com/i18next/i18next-cli/compare/v1.47.9...v1.47.10) - 2026-03-03
+
+- fallback locize cli calls to npx
+
+## [1.47.9](https://github.com/i18next/i18next-cli/compare/v1.47.8...v1.47.9) - 2026-03-03
+
+- improve instrumenter regarding i18n init file
+
+## [1.47.8](https://github.com/i18next/i18next-cli/compare/v1.47.7...v1.47.8) - 2026-03-02
+
+- improve instrumenter regarding `<Trans>` component
+
+## [1.47.7](https://github.com/i18next/i18next-cli/compare/v1.47.6...v1.47.7) - 2026-03-02
+
+- fix: checkInterpolationParams false positives with variable t() options [#203](https://github.com/i18next/i18next-cli/issues/203)
+- improve instrumenter
+
+## [1.47.6](https://github.com/i18next/i18next-cli/compare/v1.47.5...v1.47.6) - 2026-03-02
+
+- prefix Nesting conflict message [#200](https://github.com/i18next/i18next-cli/issues/200)
+
+## [1.47.5](https://github.com/i18next/i18next-cli/compare/v1.47.4...v1.47.5) - 2026-03-02
+
+- locize-migrate internally always uses `--download true`
+
+## [1.47.4](https://github.com/i18next/i18next-cli/compare/v1.47.3...v1.47.4) - 2026-03-02
+
+- mask potential api-key console output for locize command
+
+## [1.47.3](https://github.com/i18next/i18next-cli/compare/v1.47.1...v1.47.3) - 2026-03-02
+
+- improve interactive prompt with locize command
+
+## [1.47.1](https://github.com/i18next/i18next-cli/compare/v1.47.0...v1.47.1) - 2026-03-02
+
+- fix: checkInterpolationParams does not support {{param, format}} formatting syntax [#202](https://github.com/i18next/i18next-cli/issues/202)
+
+## [1.47.0](https://github.com/i18next/i18next-cli/compare/v1.46.4...v1.47.0) - 2026-03-01
+
+- feat: new `instrument` command — automatically wraps hardcoded strings in source files with `t()` calls, injects `useTranslation()` hooks in React components, generates an i18n init file, and imports it into the project's entry point
+
+## [1.46.4](https://github.com/i18next/i18next-cli/compare/v1.46.2...v1.46.4) - 2026-02-28
+
+- fix: nesting conflicts are now reported as errors instead of silently skipping the key [#200](https://github.com/i18next/i18next-cli/issues/200)
+
+## [1.46.2](https://github.com/i18next/i18next-cli/compare/v1.46.1...v1.46.2) - 2026-02-27
+
+- fix: Extraction with keySeparator can create empty string segments [#200](https://github.com/i18next/i18next-cli/issues/200)
+- fix: expanded plurals lose location information [#201](https://github.com/i18next/i18next-cli/issues/201)
+
+## [1.46.1](https://github.com/i18next/i18next-cli/compare/v1.46.0...v1.46.1) - 2026-02-27
+
+- update dependencies to address some potential vulnerability issues [#196](https://github.com/i18next/i18next-cli/issues/196)
+
+## [1.46.0](https://github.com/i18next/i18next-cli/compare/v1.45.0...v1.46.0) - 2026-02-25
+
+- Extraction should use inline count property of Trans component [#194](https://github.com/i18next/i18next-cli/issues/194)
+
+## [1.45.0](https://github.com/i18next/i18next-cli/compare/v1.44.0...v1.45.0) - 2026-02-25
+
+- address: extractor should fail on error [#193](https://github.com/i18next/i18next-cli/issues/193)
+
+## [1.44.0](https://github.com/i18next/i18next-cli/compare/v1.43.0...v1.44.0) - 2026-02-25
+
+- feat: linter plugin [#192](https://github.com/i18next/i18next-cli/pull/192)
+
+## [1.43.0](https://github.com/i18next/i18next-cli/compare/v1.42.12...v1.43.0) - 2026-02-23
+
+- feat(status): Add hideTranslated to show only untranslated keys in detail status view [#190](https://github.com/i18next/i18next-cli/pull/190)
+
+## [1.42.12](https://github.com/i18next/i18next-cli/compare/v1.42.11...v1.42.12) - 2026-02-21
+
+- Fix Identifier handling in getObjectPropValue() utility [#189](https://github.com/i18next/i18next-cli/pull/189)
+
+## [1.42.11](https://github.com/i18next/i18next-cli/compare/v1.42.10...v1.42.11) - 2026-02-21
+
+- fix: Insufficient namespace and keyPrefix scope evaluation [#188](https://github.com/i18next/i18next-cli/issues/188)
+
+## [1.42.10](https://github.com/i18next/i18next-cli/compare/v1.42.9...v1.42.10) - 2026-02-19
+
+- fix: exit with a non-zero code when a config file exists but fails to load, instead of prompting to create a new one [#185](https://github.com/i18next/i18next-cli/issues/185)
+- fix: interpolation lint now checks the translated value (not just the key) when key and value differ [#186](https://github.com/i18next/i18next-cli/issues/186)
+- fix: interpolation lint now reports the correct line number for each duplicate `t()` call [#187](https://github.com/i18next/i18next-cli/issues/187)
+
+## [1.42.9](https://github.com/i18next/i18next-cli/compare/v1.42.8...v1.42.9) - 2026-02-11
+
+- revert: multi-segment namespace glob change caused regression — `**` glob was too greedy and matched unrelated locale files, writing empty `{}` over existing translations [#182](https://github.com/i18next/i18next-cli/issues/182)
+
+## [1.42.8](https://github.com/i18next/i18next-cli/compare/v1.42.7...v1.42.8) - 2026-02-11
+
+- linter: improve `checkInterpolationParams` (ignore i18next variables) [#178](https://github.com/i18next/i18next-cli/issues/178)
+- extractor: fix ignoreNamespaces not respected when removeUnusedKeys is true [#171](https://github.com/i18next/i18next-cli/issues/171)
+
+## [1.42.7](https://github.com/i18next/i18next-cli/compare/v1.42.6...v1.42.7) - 2026-02-11
+
+- chore: removed "chalk" in favor of node:utils's styleText [#173](https://github.com/i18next/i18next-cli/pull/173)
+
+## [1.42.6](https://github.com/i18next/i18next-cli/compare/v1.42.5...v1.42.6) - 2026-02-09
+
+- fix multi-segment namespaces (e.g. `useTranslation('/widgets/component')` with output `src/{{namespace}}/locales/{{language}}.json`) — glob used `*` which only matches a single directory level, changed to `**`; namespace recovery used `basename()` which returned the filename instead of the full namespace path, replaced with regex-based `extractNamespaceFromPath()` [#182](https://github.com/i18next/i18next-cli/issues/182)
+
+## [1.42.5](https://github.com/i18next/i18next-cli/compare/v1.42.4...v1.42.5) - 2026-02-09
+
+- fix span normalization for files with leading whitespace or comments — `Module.span.start` points to the first token, not byte 0, so the base offset was miscalculated [#180](https://github.com/i18next/i18next-cli/issues/180)
+- replace string-search `getLocationFromNode` with span-based location computation now that AST spans are correctly normalized — removes `lastSearchIndex`/`resetSearchIndex` workaround
+
+## [1.42.4](https://github.com/i18next/i18next-cli/compare/v1.42.3...v1.42.4) - 2026-02-09
+
+- fix plugin system: normalize SWC AST span offsets so that `node.span.start`/`end` in `onVisitNode` are file-relative instead of accumulated across files — previously, spans for files parsed after the first one exceeded the source file length [#180](https://github.com/i18next/i18next-cli/issues/180)
+
+## [1.42.3](https://github.com/i18next/i18next-cli/compare/v1.42.2...v1.42.3) - 2026-02-06
+
+- linter: improve `checkInterpolationParams` (object as value) [#178](https://github.com/i18next/i18next-cli/issues/178)
+
+## [1.42.2](https://github.com/i18next/i18next-cli/compare/v1.42.1...v1.42.2) - 2026-02-06
+
+- fix extractor: `<Trans>` serialization broken when user project has a different React version (e.g. React 18) than the CLI — caused by `$$typeof` symbol mismatch in `isValidElement` [#179](https://github.com/i18next/i18next-cli/issues/179)
+
+## [1.42.1](https://github.com/i18next/i18next-cli/compare/v1.42.0...v1.42.1) - 2026-02-06
+
+- linter: improve `checkInterpolationParams` [#178](https://github.com/i18next/i18next-cli/issues/178)
+
+## [1.42.0](https://github.com/i18next/i18next-cli/compare/v1.41.4...v1.42.0) - 2026-02-05
+
+- YAML translation file support [#177](https://github.com/i18next/i18next-cli/issues/177)
+
+## [1.41.4](https://github.com/i18next/i18next-cli/compare/v1.41.1...v1.41.4) - 2026-02-03
+
+- fix extractor: preserve locale-specific plural forms when using `--sync-primary` flag [#174](https://github.com/i18next/i18next-cli/pull/174)
+
+## [1.41.1](https://github.com/i18next/i18next-cli/compare/v1.41.0...v1.41.1) - 2026-01-31
+
+- fix: extract ignoring keyPrefix in translation function call [#172](https://github.com/i18next/i18next-cli/pull/172)
+
+## [1.41.0](https://github.com/i18next/i18next-cli/compare/v1.40.1...v1.41.0) - 2026-01-30
+
+- add support for ignoring namespaces during extraction, status, and sync operations [#169](https://github.com/i18next/i18next-cli/pull/169)
+
+## [1.40.1](https://github.com/i18next/i18next-cli/compare/v1.40.0...v1.40.1) - 2026-01-29
+
+- improve conflict detection for rename-key to rename the plural translation key [#168](https://github.com/i18next/i18next-cli/issues/168)
+
+## [1.40.0](https://github.com/i18next/i18next-cli/compare/v1.39.12...v1.40.0) - 2026-01-28
+
+- add support for rename-key to rename the plural translation key [#168](https://github.com/i18next/i18next-cli/issues/168)
+
+## [1.39.12](https://github.com/i18next/i18next-cli/compare/v1.39.6...v1.39.12) - 2026-01-28
+
+- further improve rename-key [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.39.6](https://github.com/i18next/i18next-cli/compare/v1.39.5...v1.39.6) - 2026-01-27
+
+- fix rename-key for windows [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.39.5](https://github.com/i18next/i18next-cli/compare/v1.39.4...v1.39.5) - 2026-01-27
+
+- further improve rename-key: when moving from defaultNS [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.39.4](https://github.com/i18next/i18next-cli/compare/v1.39.3...v1.39.4) - 2026-01-27
+
+- further improve rename-key: when moving from defaultNS [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.39.3](https://github.com/i18next/i18next-cli/compare/v1.39.2...v1.39.3) - 2026-01-27
+
+- further improve rename-key: when moving from defaultNS [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.39.2](https://github.com/i18next/i18next-cli/compare/v1.39.1...v1.39.2) - 2026-01-27
+
+- enhance rename-key: when moving from defaultNS [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.39.1](https://github.com/i18next/i18next-cli/compare/v1.39.0...v1.39.1) - 2026-01-27
+
+- enhance rename-key: now updates namespace references in both key strings and t options [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.39.0](https://github.com/i18next/i18next-cli/compare/v1.38.2...v1.39.0) - 2026-01-27
+
+- allow rename-key to move translation keys between namespaces, updating all relevant source and translation files [#167](https://github.com/i18next/i18next-cli/issues/167)
+
+## [1.38.2](https://github.com/i18next/i18next-cli/compare/v1.38.1...v1.38.2) - 2026-01-27
+
+- fix linter incorrectly treating translation keys as translation strings when checking for unused interpolation parameters [#165](https://github.com/i18next/i18next-cli/issues/165)
+
+## [1.38.1](https://github.com/i18next/i18next-cli/compare/v1.38.0...v1.38.1) - 2026-01-26
+
+- pass logger via options [#164](https://github.com/i18next/i18next-cli/issues/164)
+
+## [1.38.0](https://github.com/i18next/i18next-cli/compare/v1.37.1...v1.38.0) - 2026-01-26
+
+- feat: Add `--quiet` flag to all spinner-based commands (extract, types, lint, sync) to silence spinner and non-essential output for CI or scripting [#164](https://github.com/i18next/i18next-cli/issues/164)
+- feat: Support programmatic logger injection; all progress and info output can be routed to a custom logger object
+
+## [1.37.1](https://github.com/i18next/i18next-cli/compare/v1.37.0...v1.37.1) - 2026-01-24
+
+- extractor: fix key extraction for custom functions with useTranslationNames - now correctly applies namespace and keyPrefix when using destructured syntax [#162](https://github.com/i18next/i18next-cli/issues/162)
+
+## [1.37.0](https://github.com/i18next/i18next-cli/compare/v1.36.1...v1.37.0) - 2026-01-23
+
+- lint: should check interpolation parameters [#161](https://github.com/i18next/i18next-cli/issues/161)
+
+## [1.36.1](https://github.com/i18next/i18next-cli/compare/v1.36.0...v1.36.1) - 2026-01-14
+
+- status: fix fallbackNS option for merged namespaces handling [#158](https://github.com/i18next/i18next-cli/issues/158)
+
+## [1.36.0](https://github.com/i18next/i18next-cli/compare/v1.35.0...v1.36.0) - 2026-01-14
+
+- status: introduce fallbackNS option, to prevent missing key warnings [#158](https://github.com/i18next/i18next-cli/issues/158)
+
+## [1.35.0](https://github.com/i18next/i18next-cli/compare/v1.34.1...v1.35.0) - 2026-01-12
+
+- extractor: Allow extraction from new expressions [#157](https://github.com/i18next/i18next-cli/pull/157)
+
+## [1.34.1](https://github.com/i18next/i18next-cli/compare/v1.34.0...v1.34.1) - 2026-01-06
+
+- locize-commands: make sure the cdnType is also handled for the download command [#156](https://github.com/i18next/i18next-cli/issues/156)
+
+## [1.34.0](https://github.com/i18next/i18next-cli/compare/v1.33.5...v1.34.0) - 2026-01-01
+
+- feat: align extraction/parsing behavior with react-i18next by using react-i18next's `nodesToString` [#155](https://github.com/i18next/i18next-cli/pull/155)
+
+## [1.33.5](https://github.com/i18next/i18next-cli/compare/v1.33.4...v1.33.5) - 2025-12-19
+
+- fix(extractor): improve `<Trans>` whitespace normalization around preserved inline tags (e.g. `<strong>`) and nested components [#150](https://github.com/i18next/i18next-cli/issues/150)
+
+## [1.33.4](https://github.com/i18next/i18next-cli/compare/v1.33.3...v1.33.4) - 2025-12-19
+
+- fix(extractor): make `<Trans>` placeholder indexing stable for nested structures (paragraphs/lists) and TypeScript `as` assertions [#148](https://github.com/i18next/i18next-cli/issues/148)
+
+## [1.33.3](https://github.com/i18next/i18next-cli/compare/v1.33.2...v1.33.3) - 2025-12-18
+
+- fix(extractor): normalize `<Trans>` placeholder indexes when TS `as` assertions appear inside child elements (prevents off-by-one numbering) [#148](https://github.com/i18next/i18next-cli/issues/148)
+
+## [1.33.2](https://github.com/i18next/i18next-cli/compare/v1.33.1...v1.33.2) - 2025-12-18
+
+- fix(extractor): apply configured `extract.defaultValue` to primary language for keyPrefix-derived nested keys during extraction [#152](https://github.com/i18next/i18next-cli/issues/152)
+
+## [1.33.1](https://github.com/i18next/i18next-cli/compare/v1.33.0...v1.33.1) - 2025-12-18
+
+- fix(extractor): support `ConditionalExpression` inside `<Trans>` JSX placeholders (avoid per-file skip) [#141](https://github.com/i18next/i18next-cli/issues/141)
+- fix(extractor): normalize `<Trans>` child placeholder indexing for additional `{" "}` / formatting-whitespace edge cases [#150](https://github.com/i18next/i18next-cli/issues/150)
+
+## [1.33.0](https://github.com/i18next/i18next-cli/compare/v1.32.0...v1.33.0) - 2025-12-18
+
+- feat(locize): introduce cdnType option
+
+## [1.32.0](https://github.com/i18next/i18next-cli/compare/v1.31.0...v1.32.0) - 2025-12-14
+
+- feat(extractor): detect nested `$t(...)` calls inside translation/defaultValue strings, extract the referenced keys (including plural and context variants) [#147](https://github.com/i18next/i18next-cli/issues/147)
+- fix(extractor): normalize numeric placeholder indexing when TypeScript "as" type assertions appear inside JSX, preventing inconsistent placeholder numbers in <Trans> extraction [#148](https://github.com/i18next/i18next-cli/issues/148)
+
+## [1.31.0](https://github.com/i18next/i18next-cli/compare/v1.30.5...v1.31.0) - 2025-12-09
+
+- fix(extractor): honor extract.generateBasePluralForms = false for <Trans> components — avoid emitting base plural forms (e.g. `key_one`/`key_other`) when only context-specific plural variants (`key_context_one`, `key_context_other`) are required [#145](https://github.com/i18next/i18next-cli/issues/145)
+- feat(extractor): add `extractFromComments` option to skip extracting translation-like patterns from code comments — set `extract.extractFromComments = false` to ignore example/documentation strings in comments (default: true) [#146](https://github.com/i18next/i18next-cli/issues/146)
+
+## [1.30.5](https://github.com/i18next/i18next-cli/compare/v1.30.4...v1.30.5) - 2025-12-09
+
+- fix: correctly extract translation keys from commented helper calls with any quote style (single, double, or backtick) [#143](https://github.com/i18next/i18next-cli/issues/143)
+
+## [1.30.4](https://github.com/i18next/i18next-cli/compare/v1.30.3...v1.30.4) - 2025-12-05
+
+- **Linter:** Exported `recommendedAcceptedTags` and `recommendedAcceptedAttributes` constants for easy extension of linting rules in user configs. You can now import and spread these lists to build on the default recommendations without copying them manually. [#142](https://github.com/i18next/i18next-cli/issues/142)
+
+## [1.30.3](https://github.com/i18next/i18next-cli/compare/v1.30.2...v1.30.3) - 2025-12-05
+
+- **Types:** Improved type generation when `mergeNamespaces` is enabled. The generator now correctly identifies top-level keys as namespaces in merged resource files and warns about invalid flat keys.
+
+## [1.30.2](https://github.com/i18next/i18next-cli/compare/v1.30.1...v1.30.2) - 2025-12-05
+
+- **Types:** fix ts generation when defaultNS is false
+
+## [1.30.1](https://github.com/i18next/i18next-cli/compare/v1.30.0...v1.30.1) - 2025-12-05
+
+- **Types:** Improved ts and js support [#140](https://github.com/i18next/i18next-cli/issues/140)
+- **Extractor:** Prevent process crash on file processing errors. The extractor now logs a warning and skips the problematic file instead of terminating the entire extraction process when encountering syntax errors or unsupported AST nodes. [#141](https://github.com/i18next/i18next-cli/issues/141)
+
+## [1.30.0](https://github.com/i18next/i18next-cli/compare/v1.29.4...v1.30.0) - 2025-12-05
+
+- **Types:** Fixed support for TypeScript and JavaScript input files. The generator now correctly handles `.ts`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs` files by compiling and executing them to retrieve translation resources, instead of failing with JSON parse errors. [#140](https://github.com/i18next/i18next-cli/issues/140)
+
+## [1.29.4](https://github.com/i18next/i18next-cli/compare/v1.29.3...v1.29.4) - 2025-12-04
+
+- **Extractor:** improve jsx parser to ignore jsx comments [#139](https://github.com/i18next/i18next-cli/pull/139)
+
+## [1.29.3](https://github.com/i18next/i18next-cli/compare/v1.29.2...v1.29.3) - 2025-12-03
+
+- **Status Command:** Fixed a bug where languages with fewer plural forms (e.g., German) were incorrectly reported as having missing translations when other languages with more plural forms (e.g., Arabic or French) were present. The status report now correctly calculates completeness based on each language's specific pluralization rules. [#138](https://github.com/i18next/i18next-cli/issues/138)
+
+## [1.29.2](https://github.com/i18next/i18next-cli/compare/v1.29.1...v1.29.2) - 2025-12-02
+
+- **Extractor:** Improved natural language key detection to prevent incorrect nesting or namespace splitting. Keys containing spaces or punctuation are now treated as flat keys even when `keySeparator` is enabled, and sentences containing colons (e.g., "Error: Something went wrong") are no longer incorrectly split into namespaces.
+
+## [1.29.1](https://github.com/i18next/i18next-cli/compare/v1.29.0...v1.29.1) - 2025-12-02
+
+- **Extractor:** Fixed incorrect placeholder indexing in `<Trans>` components when mixing preserved HTML tags (like `<p>`) with indexed elements at the root level. Additionally, improved handling of object expressions inside indexed elements to prevent unnecessary index shifts. [#136](https://github.com/i18next/i18next-cli/issues/136)
+
+## [1.29.0](https://github.com/i18next/i18next-cli/compare/v1.28.3...v1.29.0) - 2025-12-02
+
+- **Linter:** Added support for `lint.ignore` configuration option, allowing users to specify glob patterns for files to be excluded from linting. This works in addition to `extract.ignore`, enabling more granular control over which files are checked for hardcoded strings. [#135](https://github.com/i18next/i18next-cli/issues/135)
+
+## [1.28.3](https://github.com/i18next/i18next-cli/compare/v1.28.2...v1.28.3) - 2025-12-02
+
+- **Extractor & Linter:** Fixed a bug where files with a `.js` extension containing JSX would fail to parse and process. The extractor and linter now correctly handle JSX syntax in `.js` files, ensuring reliable key extraction and hardcoded string detection for React codebases using `.js` files. [#134](https://github.com/i18next/i18next-cli/issues/134)
+
+## [1.28.2](https://github.com/i18next/i18next-cli/compare/v1.28.1...v1.28.2) - 2025-12-01
+
+- **Extractor:** Improved robustness for JSX/TSX placeholder extraction. Replaced silent fallback (`out += '{{value}}'`) with explicit error in JSX placeholders now throw an error instead of silently producing incorrect output. [#133](https://github.com/i18next/i18next-cli/issues/133)
+- **Extractor:** Removed unnecessary regex workaround for TypeScript type assertions inside JSX curly braces. SWC now correctly parses `{ key: value as any }` and similar patterns, so extraction logic relies solely on AST analysis for reliability. [#133](https://github.com/i18next/i18next-cli/issues/133)
+- **Tests:** Fixed and clarified TypeScript test cases for JSX placeholder extraction, ensuring coverage for type assertions and object expressions in `<Trans>` components. [#133](https://github.com/i18next/i18next-cli/issues/133)
+
+## [1.28.1](https://github.com/i18next/i18next-cli/compare/v1.28.0...v1.28.1) - 2025-12-01
+
+- **Extractor:** Fixed a bug where TypeScript type assertions inside JSX curly braces (e.g. `{count as any}` or `{ key: property } as any`) resulted in incorrect or silently bad extractions. The extractor now strips type assertions and correctly extracts placeholders such as `{{count}}` and `{{key}}` from TSX/JSX. [#133](https://github.com/i18next/i18next-cli/issues/133)
+
+## [1.28.0](https://github.com/i18next/i18next-cli/compare/v1.27.1...v1.28.0) - 2025-11-29
+
+- feat(status): exit when locales have missing keys [#132](https://github.com/i18next/i18next-cli/pull/132)
+
+## [1.27.1](https://github.com/i18next/i18next-cli/compare/v1.27.0...v1.27.1) - 2025-11-27
+
+- ensure `.json5` files are inferred from filename when `extract.outputFormat` is omitted [#130](https://github.com/i18next/i18next-cli/issues/130)
+
+## [1.27.0](https://github.com/i18next/i18next-cli/compare/v1.26.1...v1.27.0) - 2025-11-27
+
+- Add JSON5 support: translation files with `.json5` extension now try to preserve comments and formatting [#130](https://github.com/i18next/i18next-cli/issues/130)
+- fix(extractor): address skipped Trans extraction test by restoring correct JSX `<Trans>` child placeholder indexing and spacing handling [#129](https://github.com/i18next/i18next-cli/issues/129)
+
+## [1.26.1](https://github.com/i18next/i18next-cli/compare/v1.26.0...v1.26.1) - 2025-11-26
+
+- improved jsx-parser [#128](https://github.com/i18next/i18next-cli/issues/128)
+
+## [1.26.0](https://github.com/i18next/i18next-cli/compare/v1.25.1...v1.26.0) - 2025-11-26
+
+- feat(extractor): add --sync-all flag to extract command — sync primary defaults and clear synced keys in all other locales [#127](https://github.com/i18next/i18next-cli/issues/127)
+- prepare some skipped test for some Trans extraction use cases [#128](https://github.com/i18next/i18next-cli/issues/128) and [#129](https://github.com/i18next/i18next-cli/issues/129)
+
+## [1.25.1](https://github.com/i18next/i18next-cli/compare/v1.25.0...v1.25.1) - 2025-11-25
+
+- improve(linter): fall back to built‑in recommended accept‑lists for tags & attributes when none are configured [#125](https://github.com/i18next/i18next-cli/issues/125)
+
+## [1.25.0](https://github.com/i18next/i18next-cli/compare/v1.24.22...v1.25.0) - 2025-11-25
+
+- feat(linter): add accept-lists for tags & attributes (`lint.acceptedTags` / `lint.acceptedAttributes`) [#125](https://github.com/i18next/i18next-cli/issues/125)
+
+## [1.24.22](https://github.com/i18next/i18next-cli/compare/v1.24.21...v1.24.22) - 2025-11-24
+
+- fix(extractor): correctly compute numeric placeholders for nested JSX children in `<Trans>` (off-by-one caused by explicit {" "} expression and formatting whitespace), so extracted keys match react-i18next runtime behavior [#124](https://github.com/i18next/i18next-cli/issues/124)
+
+## [1.24.21](https://github.com/i18next/i18next-cli/compare/v1.24.20...v1.24.21) - 2025-11-21
+
+- extractor: make TypeScript TFunction generic namespace detection robust across AST variants [#122](https://github.com/i18next/i18next-cli/issues/122)
+
+## [1.24.20](https://github.com/i18next/i18next-cli/compare/v1.24.19...v1.24.20) - 2025-11-20
+
+- extractor: detect namespace from TypeScript TFunction generic (e.g. `TFunction<"my-custom-namespace">`) [#122](https://github.com/i18next/i18next-cli/issues/122)
+
+## [1.24.19](https://github.com/i18next/i18next-cli/compare/v1.24.18...v1.24.19) - 2025-11-19
+
+- fix(extractor): ensure `<Trans>` inherits `keyPrefix` from `useTranslation` when `t` is passed as a prop [#121](https://github.com/i18next/i18next-cli/issues/121)
+
+## [1.24.18](https://github.com/i18next/i18next-cli/compare/v1.24.17...v1.24.18) - 2025-11-19
+
+- fix(status): correctly handle flat (no-namespace) translation files when extract.defaultNS = false and extract.mergeNamespaces = true [#120](https://github.com/i18next/i18next-cli/issues/120)
+
+## [1.24.17](https://github.com/i18next/i18next-cli/compare/v1.24.16...v1.24.17) - 2025-11-19
+
+- improve rename-key when Selector API is used with bracket notation [#119](https://github.com/i18next/i18next-cli/issues/119)
+
+## [1.24.16](https://github.com/i18next/i18next-cli/compare/v1.24.15...v1.24.16) - 2025-11-19
+
+- fix: note in generated i18next.d.ts [#119](https://github.com/i18next/i18next-cli/issues/119)
+
+## [1.24.15](https://github.com/i18next/i18next-cli/compare/v1.24.14...v1.24.15) - 2025-11-19
+
+- fix: rename-key fails when Selector API is used [#119](https://github.com/i18next/i18next-cli/issues/119)
+
+## [1.24.14](https://github.com/i18next/i18next-cli/compare/v1.24.13...v1.24.14) - 2025-11-18
+
+- fix: patch glob sec vuln [#117](https://github.com/i18next/i18next-cli/pull/117)
+- improved build setup
+
+## [1.24.13](https://github.com/i18next/i18next-cli/compare/v1.24.12...v1.24.13) - 2025-11-17
+
+- fix(extractor): correctly extract keys from `<Trans>` when i18nKey uses the selector API (arrow function) [#114](https://github.com/i18next/i18next-cli/issues/114)
+
+## [1.24.12](https://github.com/i18next/i18next-cli/compare/v1.24.11...v1.24.12) - 2025-11-17
+
+- update dependencies and pass indentation option to types generation
+
+## [1.24.11](https://github.com/i18next/i18next-cli/compare/v1.24.10...v1.24.11) - 2025-11-17
+
+- fix(types): correctly generate types when using `mergeNamespaces: true` [#113](https://github.com/i18next/i18next-cli/issues/113)
+
+## [1.24.10](https://github.com/i18next/i18next-cli/compare/v1.24.9...v1.24.10) - 2025-11-16
+
+- improve handling of namespace/keyPrefix argument parsing to address [#112](https://github.com/i18next/i18next-cli/issues/112)
+
+## [1.24.9](https://github.com/i18next/i18next-cli/compare/v1.24.8...v1.24.9) - 2025-11-16
+
+- fix: a namespace prefix passed as an argument (e.g. to useTranslation or custom hooks) could be treated as part of the translation key, producing unexpected nested namespace objects in generated JSON files. [#112](https://github.com/i18next/i18next-cli/issues/112)
+
+## [1.24.8](https://github.com/i18next/i18next-cli/compare/v1.24.7...v1.24.8) - 2025-11-14
+
+- improved Trans component parsing further [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.24.7](https://github.com/i18next/i18next-cli/compare/v1.24.6...v1.24.7) - 2025-11-14
+
+- improved Trans component parsing further [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.24.6](https://github.com/i18next/i18next-cli/compare/v1.24.5...v1.24.6) - 2025-11-14
+
+- improved Trans component parsing further [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.24.5](https://github.com/i18next/i18next-cli/compare/v1.24.4...v1.24.5) - 2025-11-13
+
+- improved Trans component parsing further [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.24.4](https://github.com/i18next/i18next-cli/compare/v1.24.3...v1.24.4) - 2025-11-13
+
+- **Location Metadata:** Fixed critical bug in location tracking where line and column numbers were consistently pointing to the end of file instead of actual usage positions. The extractor now uses text-based search instead of relying on SWC span offsets, which were accumulating across multiple files in the same process. This ensures accurate source location metadata for plugins that track where translation keys are used in the codebase. [#111](https://github.com/i18next/i18next-cli/issues/111)
+
+## [1.24.3](https://github.com/i18next/i18next-cli/compare/v1.24.2...v1.24.3) - 2025-11-12
+
+- improved Trans component parsing further [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.24.2](https://github.com/i18next/i18next-cli/compare/v1.24.1...v1.24.2) - 2025-11-12
+
+- **Extractor (`--sync-primary`):** Fixed a bug where default values containing colons (like `"fallback:"`) were incorrectly identified as namespace-prefixed keys, resulting in empty strings in translation files when using the `--sync-primary` flag. [#110](https://github.com/i18next/i18next-cli/issues/110)
+
+## [1.24.1](https://github.com/i18next/i18next-cli/compare/v1.24.0...v1.24.1) - 2025-11-12
+
+- Windows fix for new **CLI:** command `rename-key`
+
+## [1.24.0](https://github.com/i18next/i18next-cli/compare/v1.23.6...v1.24.0) - 2025-11-12
+
+- **CLI:** Introduced the `rename-key` command for safely refactoring translation keys across your entire codebase. This new command updates both source files and translation JSON files atomically, automatically handling namespaces, plurals, and multiple locales. [#109](https://github.com/i18next/i18next-cli/issues/109)
+- improved Trans component parsing further [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.23.7](https://github.com/i18next/i18next-cli/compare/v1.23.6...v1.23.7) - 2025-11-12
+
+- improved Trans component parsing further [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.23.6](https://github.com/i18next/i18next-cli/compare/v1.23.5...v1.23.6) - 2025-11-12
+
+- fix jsx extraction [#108](https://github.com/i18next/i18next-cli/issues/108)
+- improved Trans component parsing for spaces [#102](https://github.com/i18next/i18next-cli/issues/102)
+
+## [1.23.5](https://github.com/i18next/i18next-cli/compare/v1.23.4...v1.23.5) - 2025-11-11
+
+- **Extractor:** Fixed custom sort function not being applied to nested keys. When providing a custom `sort` function (e.g., for case-insensitive sorting to match locize's behavior), the sorting logic is now correctly applied throughout the entire object hierarchy, not just at the top level. This ensures consistent key ordering at all nesting levels in translation files. [#106](https://github.com/i18next/i18next-cli/issues/106)
+
+## [1.23.4](https://github.com/i18next/i18next-cli/compare/v1.23.3...v1.23.4) - 2025-11-11
+
+- Fix preservingContextVariants when using shorthand property for context in options. [#105](https://github.com/i18next/i18next-cli/pull/105)
+
+## [1.23.3](https://github.com/i18next/i18next-cli/compare/v1.23.2...v1.23.3) - 2025-11-10
+
+- Fix preservingContextVariants with fully dynamic context in Trans. [#104](https://github.com/i18next/i18next-cli/pull/104)
+
+## [1.23.2](https://github.com/i18next/i18next-cli/compare/v1.23.1...v1.23.2) - 2025-11-10
+
+- **Plugin System:** Exported `ExtractedKeysMap` type alias for improved TypeScript support in custom plugins. Plugin authors can now import and use `ExtractedKeysMap` directly instead of manually constructing `Map<string, ExtractedKey>` when typing the `onEnd` hook's keys parameter. This provides better discoverability and a more convenient API for plugin development. [#103](https://github.com/i18next/i18next-cli/issues/103)
+
+## [1.23.1](https://github.com/i18next/i18next-cli/compare/v1.23.0...v1.23.1) - 2025-11-10
+
+- **Extractor (`<Trans>`):** Fixed self-closing tag formatting in Trans component extraction. Self-closing HTML tags like `<br />` (with space before slash) are now correctly preserved as `<br />` instead of being normalized to `<br/>` (without space). This ensures consistent formatting between source code and extracted translation keys, matching common JSX/HTML conventions and maintaining compatibility with existing translation workflows. [#101](https://github.com/i18next/i18next-cli/issues/101)
+
+## [1.23.0](https://github.com/i18next/i18next-cli/compare/v1.22.2...v1.23.0) - 2025-11-09
+
+- **Extractor:** Add a `preserveContextVariants` option to keep context variants when removing unused keys. When enabled, all context variants of keys that use context parameters are preserved in translation files even if not explicitly found in source code. [#99](https://github.com/i18next/i18next-cli/pull/99)
+
+## [1.22.2](https://github.com/i18next/i18next-cli/compare/v1.22.1...v1.22.2) - 2025-11-08
+
+- **Status Command:** Fixed incorrect plural key requirements for languages with different pluralization rules. The status report now correctly evaluates each language based on its own plural categories instead of incorrectly using the primary language's rules. For example, Swedish (which only requires `_one` and `_other` forms) will now show 100% completion when both forms are present, even when other languages in the project like French require additional forms (`_many`). This ensures accurate translation progress reporting across multilingual projects with varying plural rules. [#98](https://github.com/i18next/i18next-cli/issues/98)
+
+## [1.22.1](https://github.com/i18next/i18next-cli/compare/v1.22.0...v1.22.1) - 2025-11-06
+
+- **Types-Generator:** Add a comment to the start of the types file to note it is auto-generated [#97](https://github.com/i18next/i18next-cli/pull/97)
+
+## [1.22.0](https://github.com/i18next/i18next-cli/compare/v1.21.1...v1.22.0) - 2025-11-06
+
+- **Plugin System:** Enhanced `ExtractedKey` type and plugin hooks to support location metadata tracking. Plugins can now access file paths, etc. for each extracted translation key via the `locations` array property. [#95](https://github.com/i18next/i18next-cli/issues/95)
+
+## [1.21.1](https://github.com/i18next/i18next-cli/compare/v1.21.0...v1.21.1) - 2025-11-05
+
+- **Extractor (`--sync-primary`):** Fixed a bug where `<Trans i18nKey='namespace:key' />` components with namespaced keys were having their existing primary language translations overwritten with the full namespaced key string (e.g., `'translation:app.preservedTrans'`) when using the `--sync-primary` flag. The extractor now correctly identifies namespaced keys in defaultValue as derived (auto-generated) defaults rather than explicit developer-provided values, preserving existing translations when no explicit defaultValue is provided. This ensures that `<Trans>` components without explicit defaults behave consistently with `t()` calls under `--sync-primary`. [#92](https://github.com/i18next/i18next-cli/issues/92)
+
+## [1.21.0](https://github.com/i18next/i18next-cli/compare/v1.20.4...v1.21.0) - 2025-11-05
+
+- **Extractor:** Enhanced `preservePatterns` with namespace pattern support. You can now preserve entire namespaces or namespace-specific key patterns using the namespace separator (e.g., `'assets:*'` to preserve all keys in the `assets` namespace, or `'common:button.*'` to preserve specific patterns within a namespace). This is particularly useful for managing translations that are handled externally, loaded dynamically, or constructed at runtime. Pattern matching respects the configured `nsSeparator` setting. [#90](https://github.com/i18next/i18next-cli/issues/90)
+
+## [1.20.4](https://github.com/i18next/i18next-cli/compare/v1.20.3...v1.20.4) - 2025-11-04
+
+- improve(extractor): tolerate JSX/TSX in `.ts` files by retrying parse with TSX enabled. [#75](https://github.com/i18next/i18next-cli/issues/75)
+
+## [1.20.3](https://github.com/i18next/i18next-cli/compare/v1.20.2...v1.20.3) - 2025-11-04
+
+- improve(linter): tolerate JSX/TSX in `.ts` files by retrying parse with TSX enabled and emitting a per-file error (no global crash). [#75](https://github.com/i18next/i18next-cli/issues/75)
+
+## [1.20.2](https://github.com/i18next/i18next-cli/compare/v1.20.1...v1.20.2) - 2025-11-03
+
+- fix(extractor): prevent per-file variable leakage so unrelated variables in other files are not resolved as translation keys [#88](https://github.com/i18next/i18next-cli/issues/88)
+
+## [1.20.1](https://github.com/i18next/i18next-cli/compare/v1.20.0...v1.20.1) - 2025-11-03
+
+- feat(extractor): handle nullish coalescing (??) when resolving static expression keys — the extractor now treats `a ?? b` as the union of possible left/right string values (e.g. `t(a ?? 'x')` yields both sides when statically resolvable). [#86](https://github.com/i18next/i18next-cli/issues/86)
+
+## [1.20.0](https://github.com/i18next/i18next-cli/compare/v1.19.3...v1.20.0) - 2025-11-03
+
+- feat(extractor): statically extract keys referenced via TypeScript enums (e.g. `t(ERROR_CODE.UNKNOWN_ERROR)` → `'UNKNOWN_ERROR'`). Resolves only string-initialized enum members; conservative, non-breaking. [#87](https://github.com/i18next/i18next-cli/issues/87)
+
+## [1.19.3](https://github.com/i18next/i18next-cli/compare/v1.19.2...v1.19.3) - 2025-11-02
+
+- fix(extractor): improving preserve flat JSON output when extract.defaultNS is false during re-extraction. [#73](https://github.com/i18next/i18next-cli/issues/73)
+
+## [1.19.2](https://github.com/i18next/i18next-cli/compare/v1.19.1...v1.19.2) - 2025-11-02
+
+- fix(extractor): preserve flat output when extract.defaultNS is false on re-extracttion. [#73](https://github.com/i18next/i18next-cli/issues/73)
+
+## [1.19.1](https://github.com/i18next/i18next-cli/compare/v1.19.0...v1.19.1) - 2025-10-31
+
+- fix: Prevent parser crashes on TypeScript files that use angle‑bracket type assertions (e.g. `const x = <SomeType>getValue()`). The extractor and linter now choose SWC's TSX parsing mode based on the file extension (`.tsx` => JSX enabled, `.ts`/`.mts`/`.cts` => JSX disabled), avoiding accidental JSX parsing of compile‑time casts. [#84](https://github.com/i18next/i18next-cli/issues/84)
+
+## [1.19.0](https://github.com/i18next/i18next-cli/compare/v1.18.1...v1.19.0) - 2025-10-31
+
+- feat(extractor): improve key extraction to detect translation keys stored in local variables, object properties and simple string expressions [#83](https://github.com/i18next/i18next-cli/issues/83)
+
+## [1.18.1](https://github.com/i18next/i18next-cli/compare/v1.18.0...v1.18.1) - 2025-10-30
+
+- improve regression introduced in v1.17.2 [#82](https://github.com/i18next/i18next-cli/issues/82)
+
+## [1.18.0](https://github.com/i18next/i18next-cli/compare/v1.17.2...v1.18.0) - 2025-10-30
+
+- fix regression introduced in v1.17.2 [#82](https://github.com/i18next/i18next-cli/issues/82)
+- enhancement(linter): use emitter for runLinter API [#79](https://github.com/i18next/i18next-cli/pull/79)
+
+## [1.17.2](https://github.com/i18next/i18next-cli/compare/v1.17.1...v1.17.2) - 2025-10-29
+
+- fix(status, extractor): avoid double‑expanding plural keys which could make locales show 0% translated [#81](https://github.com/i18next/i18next-cli/issues/81)
+- fix(extractor): emit base key for single‑category plural languages (ja, zh, ko) [#82](https://github.com/i18next/i18next-cli/issues/82)
+
+## [1.17.1](https://github.com/i18next/i18next-cli/compare/v1.17.0...v1.17.1) - 2025-10-29
+
+- fix: regression for windows introduced in v1.17.0
+
+## [1.17.0](https://github.com/i18next/i18next-cli/compare/v1.16.0...v1.17.0) - 2025-10-29
+
+- feat: support functional `extract.output` for per-package paths [#80](https://github.com/i18next/i18next-cli/issues/80)
+
+## [1.16.0](https://github.com/i18next/i18next-cli/compare/v1.15.0...v1.16.0) - 2025-10-28
+
+- feat(extractor): better support for custom translation hooks returning t/getFixedT [#78](https://github.com/i18next/i18next-cli/issues/78)
+
+## [1.15.0](https://github.com/i18next/i18next-cli/compare/v1.14.0...v1.15.0) - 2025-10-27
+
+- feat(cli): add global `-c, --config <path>` option to override automatic config detection and point the CLI at a specific i18next config file. [#77](https://github.com/i18next/i18next-cli/issues/77)
+
+## [1.14.0](https://github.com/i18next/i18next-cli/compare/v1.13.1...v1.14.0) - 2025-10-27
+
+- Parse simple template strings when extracting defaultValue-s [#76](https://github.com/i18next/i18next-cli/pull/76)
+
+## [1.13.1](https://github.com/i18next/i18next-cli/compare/v1.13.0...v1.13.1) - 2025-10-27
+
+- fix: Self Closing Tags are not ignored by linter even when put in ignoredTags [#75](https://github.com/i18next/i18next-cli/issues/75)
+
+## [1.13.0](https://github.com/i18next/i18next-cli/compare/v1.12.1...v1.13.0) - 2025-10-24
+
+- Extract: add support for `defaultNS: false`. When enabled, the extractor will not generate or wrap keys under a namespace and will output a single language JSON with top-level keys (useful for projects that keep translations in a single file per language). Preserves existing behavior when omitted or set to a string. [#73](https://github.com/i18next/i18next-cli/issues/73)
+
+## [1.12.1](https://github.com/i18next/i18next-cli/compare/v1.12.0...v1.12.1) - 2025-10-23
+
+- try to improve linter for spread operator usage [#72](https://github.com/i18next/i18next-cli/issues/72)
+
+## [1.12.0](https://github.com/i18next/i18next-cli/compare/v1.11.14...v1.12.0) - 2025-10-23
+
+- feat(default-value): add value parameter to defaultValue function [#71](https://github.com/i18next/i18next-cli/pull/71)
+
+## [1.11.14](https://github.com/i18next/i18next-cli/compare/v1.11.13...v1.11.14) - 2025-10-22
+
+- Better Fix for: Stop infinite watch loops by properly honoring extract.ignore patterns [#70](https://github.com/i18next/i18next-cli/issues/70)
+
+## [1.11.13](https://github.com/i18next/i18next-cli/compare/v1.11.12...v1.11.13) - 2025-10-22
+
+- Fix: Stop infinite watch loops by properly honoring extract.ignore patterns [#70](https://github.com/i18next/i18next-cli/issues/70)
+
+## [1.11.12](https://github.com/i18next/i18next-cli/compare/v1.11.11...v1.11.12) - 2025-10-21
+
+- further improve jsx-parser [#66](https://github.com/i18next/i18next-cli/issues/66)
+
+## [1.11.11](https://github.com/i18next/i18next-cli/compare/v1.11.10...v1.11.11) - 2025-10-20
+
+- Expose TranslationResult type for working with afterSync plugin / hook [#69](https://github.com/i18next/i18next-cli/issues/69)
+
+## [1.11.10](https://github.com/i18next/i18next-cli/compare/v1.11.9...v1.11.10) - 2025-10-20
+
+- further improve jsx-parser [#66](https://github.com/i18next/i18next-cli/issues/66)
+
+## [1.11.9](https://github.com/i18next/i18next-cli/compare/v1.11.8...v1.11.9) - 2025-10-20
+
+- Fix: Make --sync-primary (syncPrimaryWithDefaults) smarter — only overwrite primary-language plural/context variants when the source actually provides an explicit default [#67](https://github.com/i18next/i18next-cli/issues/67)
+- Fix: Detect shorthand object property "count" in t(...) calls (e.g. t('key', { count })) so plural keys are generated correctly. Adds handling for shorthand AST shapes and tests to cover the case. [#68](https://github.com/i18next/i18next-cli/issues/68)
+
+## [1.11.8](https://github.com/i18next/i18next-cli/compare/v1.11.7...v1.11.8) - 2025-10-20
+
+- Fix: Make `<Trans>` child indexing more robust by recognizing self-closing HTML tags (e.g. `<br/>`) and treating them as layout-only when appropriate. This prevents preserved HTML and surrounding formatting whitespace from shifting component placeholder indexes, so extracted default values now match react‑i18next runtime normalization. [#63](https://github.com/i18next/i18next-cli/issues/63)
+
+## [1.11.7](https://github.com/i18next/i18next-cli/compare/v1.11.6...v1.11.7) - 2025-10-20
+
+- improve: extractor --sync-primary (--syncPrimaryWithDefaults) incorrectly reset plural variants to empty strings, effectively removing existing plural translations [#67](https://github.com/i18next/i18next-cli/issues/67)
+- improve Trans child indexing further [#63](https://github.com/i18next/i18next-cli/issues/63)
+
+## [1.11.6](https://github.com/i18next/i18next-cli/compare/v1.11.5...v1.11.6) - 2025-10-19
+
+- Fix Trans child indexing to match react-i18next and handle layout-only whitespace correctly [#63](https://github.com/i18next/i18next-cli/issues/63)
+
+## [1.11.5](https://github.com/i18next/i18next-cli/compare/v1.11.4...v1.11.5) - 2025-10-17
+
+- **Extractor:** ignore formatting-only JSXText nodes when serializing <Trans> children to avoid inflated component placeholder indexes and incorrect keys caused by indentation/newlines — fixes [#66](https://github.com/i18next/i18next-cli/issues/66)
+- **Extractor:** prevent scope leakage and ensure correct namespace resolution for t()/getFixedT() when functions reference `t` declared later in the same file; restores idempotent extraction regardless of input file ordering — fixes [#65](https://github.com/i18next/i18next-cli/issues/65)
+
+## [1.11.4](https://github.com/i18next/i18next-cli/compare/v1.11.3...v1.11.4) - 2025-10-15
+
+- **Extractor:** Ignore formatting-only JSXText nodes that contain only whitespace/newlines when serializing `<Trans>` children. This prevents inflated component placeholder indexes caused by indentation/newlines while preserving intentional spaces (e.g. `{' '}`). Resulting keys now match react-i18next runtime normalization. See [#63](https://github.com/i18next/i18next-cli/issues/63).
+
+## [1.11.3](https://github.com/i18next/i18next-cli/compare/v1.11.2...v1.11.3) - 2025-10-13
+
+- **Extractor:** Fixed the `--watch` flag being ignored in the `extract` command. The watch mode now properly monitors source files for changes and re-runs extraction automatically, matching the behavior of other commands like `types` and `lint`. [#62](https://github.com/i18next/i18next-cli/issues/62)
+
+## [1.11.2](https://github.com/i18next/i18next-cli/compare/v1.11.1...v1.11.2) - 2025-10-13
+
+- **Extractor (`--sync-primary`):** Fixed critical bug where keys without explicit defaultValue were being overwritten with empty strings when using the `--sync-primary` flag. The `syncPrimaryWithDefaults` feature now correctly distinguishes between explicit default values provided in code (e.g., `t('key', 'New default')`) and derived defaults (e.g., when defaultValue equals the key name). Keys without explicit defaults now preserve their existing translations in the primary language, while only keys with meaningful code-specified defaults are updated. This ensures the feature works as intended for incremental translation updates without destroying existing content. [#61](https://github.com/i18next/i18next-cli/issues/61)
+- **Extractor (AST):** Fixed inconsistent defaultValue generation for plural keys where different plural forms of the same base key could receive different default values during AST extraction. All plural forms now correctly inherit the same explicit defaultValue from the `t()` call's second argument.
+- **Extractor (AST):** Fixed context+plural combinations generating unwanted base plural keys. When extracting keys with static context (e.g., `t('notifications.new', { context: 'email', count: 3 })`), the extractor now only generates context-specific plural forms (`notifications.new_email_one`, `notifications.new_email_other`) without creating redundant base plural forms (`notifications.new_one`, `notifications.new_other`).
+
+## [1.11.1](https://github.com/i18next/i18next-cli/compare/v1.11.0...v1.11.1) - 2025-10-12
+
+- **Syncer:** Enhanced fix for TypeScript resource file handling in `sync` command. Building on the initial fix in v1.10.4 that resolved sync command failures with `outputFormat: 'ts'`, this release improves the TypeScript file parsing reliability and error handling when loading translation files with complex export patterns and TypeScript-specific syntax. [#59](https://github.com/i18next/i18next-cli/issues/59)
+
+## [1.11.0](https://github.com/i18next/i18next-cli/compare/v1.10.4...v1.11.0) - 2025-10-11
+
+- **Extractor:** Introduced `--sync-primary` CLI option to automatically synchronize primary language values with default values from code. When enabled, the extractor updates existing primary language translations to match the default values specified in your source code (e.g., `t('key', 'New default')` will update the primary language JSON), while preserving secondary language translations and keys without explicit defaults. This enables a streamlined development workflow where developers can focus on editing translation defaults directly in code without manually managing JSON files. Perfect for rapid prototyping and watch mode development. [#60](https://github.com/i18next/i18next-cli/issues/60)
+
+## [1.10.4](https://github.com/i18next/i18next-cli/compare/v1.10.3...v1.10.4) - 2025-10-10
+
+- **Syncer:** Fixed `sync` command failure when using TypeScript resource files with `outputFormat: 'ts'`. The syncer now properly loads and parses TypeScript translation files (e.g., `export default { ... } as const`) using jiti with TypeScript path alias support, enabling seamless synchronization across all supported file formats. [#59](https://github.com/i18next/i18next-cli/issues/59)
+
+## [1.10.3](https://github.com/i18next/i18next-cli/compare/v1.10.2...v1.10.3) - 2025-10-08
+
+- **Extractor (`<Trans>`):** Fixed variable placeholder extraction from object expressions in Trans components. Previously, expressions like `<Trans>Hello {{name: userName}}</Trans>` would lose the variable placeholder and extract as `"Hello "` instead of `"Hello {{name}}"`. The JSX children serializer now correctly handles both simple identifiers (`{{name}}`) and object expressions (`{{name: value}}`) to preserve variable placeholders in the extracted translation keys. [#58](https://github.com/i18next/i18next-cli/issues/58)
+
+## [1.10.2](https://github.com/i18next/i18next-cli/compare/v1.10.1...v1.10.2) - 2025-10-08
+
+### Fixed
+- **Extractor:** Fixed plural form sorting to follow canonical i18next order (zero, one, two, few, many, other) instead of alphabetical sorting. Plural keys are now properly grouped by their base key and sorted within each group according to i18next's pluralization rules, ensuring consistent and predictable translation file structure. For example, `item_other`, `item_one`, `item_zero` now correctly sorts to `item_zero`, `item_one`, `item_other`. [#57](https://github.com/i18next/i18next-cli/issues/57)
+
+### Enhanced  
+- **Extractor:** Added intelligent handling for the optional `_zero` suffix in plural forms. The extractor now preserves existing `_zero` keys when related plural forms are present in the extracted keys, but removes them when no related plurals exist. This aligns with i18next's special handling of `count: 0` scenarios where `_zero` provides more natural language expressions (e.g., "No items" instead of "0 items"), while ensuring unused `_zero` forms don't accumulate in translation files.
+
+## [1.10.1](https://github.com/i18next/i18next-cli/compare/v1.10.0...v1.10.1) - 2025-10-07
+
+- **Extractor:** Fixed incorrect behavior of the `preservePatterns` option where keys matching the specified patterns were being extracted instead of being excluded from extraction. The option now correctly skips keys that match the glob patterns during both AST-based extraction and comment parsing, preventing re-extraction of keys that already exist in other translation files (e.g., when `BUILDINGS.*` keys exist in `assets.json` but shouldn't be duplicated in `app.json`). This resolves issues where dynamic key references were incorrectly creating duplicate entries in extracted translation files, allowing developers to use patterns like `t('BUILDINGS.ACADEMY.NAME')` directly without workarounds. [#53](https://github.com/i18next/i18next-cli/issues/53)
+
+## [1.10.0](https://github.com/i18next/i18next-cli/compare/v1.9.0...v1.10.0) - 2025-10-07
+
+### Added
+- **Extractor:** Introduced `disablePlurals` configuration option to disable plural key generation when pluralization is handled by other systems or when you only need the base key for interpolation. When enabled, `t('item', { count: 5 })` will only generate `item` instead of `item_one`, `item_other`, etc. This is useful for projects using external pluralization libraries or custom count handling. [#55](https://github.com/i18next/i18next-cli/issues/55)
+
+### Fixed
+- **Plugin System:** Fixed incorrect TypeScript type definition for the `keys` argument in the `Plugin.onEnd` hook. The keys parameter now correctly represents a `Map<string, ExtractedKey>` instead of the previous incorrect type, improving type safety for plugin development. [#56](https://github.com/i18next/i18next-cli/pull/56)
+- **Extractor:** Fixed a critical bug where empty string keys (`""`) were being created in translation files under specific conditions. This occurred when namespace processing resulted in empty keys (e.g., `t('ns:')` with `keyPrefix` combinations) or when malformed key patterns created nested empty key structures. The extractor now validates and skips problematic key combinations that would result in empty keys, preventing corrupted translation files. [#54](https://github.com/i18next/i18next-cli/issues/54)
+
+## [1.9.0](https://github.com/i18next/i18next-cli/compare/v1.8.0...v1.9.0) - 2025-10-07
+
+### Enhanced
+- **Extractor (TypeScript):** Added support for dynamic variables in TypeScript using the `satisfies` operator. The extractor can now properly resolve variables constrained with `satisfies` expressions to extract all possible translation keys, enabling type-safe dynamic key generation patterns. [#42](https://github.com/i18next/i18next-cli/pull/42)
+
+### Fixed
+- **Extractor (Comments):** Fixed pluralization logic for commented `t()` calls to generate the correct plural forms for each target language. When Arabic (`ar-SA`) is included in the locales, the extractor now properly generates all 6 Arabic plural forms (`_zero`, `_one`, `_two`, `_few`, `_many`, `_other`) in Arabic files while maintaining the correct 2 forms (`_one`, `_other`) for English files. Previously, all languages would only receive English plural forms regardless of their actual pluralization rules.
+
+### Added
+- **Extractor:** Introduced the `generateBasePluralForms` configuration option to control whether base plural forms are generated when context is present. When set to `false`, calls like `t('key', { context: 'male', count: 1 })` will only generate context-specific forms (`key_male_one`, `key_male_other`) without creating base forms (`key_one`, `key_other`), reducing translation file clutter for context-only scenarios. Defaults to `true` to maintain backward compatibility.
+
+## [1.8.0](https://github.com/i18next/i18next-cli/compare/v1.7.1...v1.8.0) - 2025-10-06
+
+- **Extractor:** The `defaultValue` option now accepts a function `(key, namespace, language) => string` for dynamic default value generation. This enables powerful patterns like i18next-parser compatibility (`defaultValue: (key) => key`), development-friendly TODO markers (`defaultValue: (key) => \`TODO: translate ${key}\``), and language-specific fallbacks. The function receives the translation key, namespace, and target language as parameters, allowing for sophisticated fallback strategies. [#52](https://github.com/i18next/i18next-cli/issues/52)
+
+## [1.7.1](https://github.com/i18next/i18next-cli/compare/v1.7.0...v1.7.1) - 2025-10-06
+
+- **Extractor (Comments):** Enhanced comment parser to support ordinal plurals alongside cardinal plurals and context combinations. Commented `t()` calls now correctly handle ordinal flags (e.g., `// t('position', { count: 1, ordinal: true })`) and generate all appropriate ordinal plural forms (`position_ordinal_one`, `position_ordinal_two`, `position_ordinal_few`, `position_ordinal_other`) using the proper `Intl.PluralRules` API. The parser also supports ordinal detection via `_ordinal` suffix in keys and properly combines ordinal plurals with context options for comprehensive key generation. This ensures complete parity with the AST-based extractor for all plural types. [#50](https://github.com/i18next/i18next-cli/issues/50)
+
+## [1.7.0](https://github.com/i18next/i18next-cli/compare/v1.6.1...v1.7.9) - 2025-10-06
+
+- **Extractor (Comments):** Improved comment extraction for complex translation patterns with both context and plural options. Commented `t()` calls like `// t('options.option', { context: 'month', count: 1 })` now correctly generate all combinations of context and plural forms (e.g., `options.option_month_one`, `options.option_month_other`, `options.option_day_one`, etc.), providing comprehensive key extraction for dynamic scenarios where developers use commented hints to declare all possible runtime values. [#50](https://github.com/i18next/i18next-cli/issues/50)
+- **Plugin System:** Added new `extractKeysFromExpression` and `extractContextFromExpression` plugin hooks for simplified custom key extraction. These pure, context-less functions allow plugins to parse specific expressions during AST traversal without handling pluralization, namespace resolution, or file writing manually. Perfect for TypeScript-specific syntax (like `satisfies` expressions), template literals with dynamic variables, or custom key generation patterns. Plugins can now focus on expression parsing logic while the core extractor handles the heavy lifting. [#49](https://github.com/i18next/i18next-cli/pull/49)
+
+## [1.6.1](https://github.com/i18next/i18next-cli/compare/v1.6.0...v1.6.1) - 2025-10-05
+
+- **Extractor (Comments):** Fixed namespace scope resolution for `t()` calls in comments. Commented translation calls like `// t("Private")` now correctly inherit the namespace from the surrounding `useTranslation('access')` scope instead of defaulting to the default namespace, matching i18next-parser behavior. This ensures consistency between commented and actual translation calls within the same component scope. [#44](https://github.com/i18next/i18next-cli/issues/44)
+- **Extractor:** Loosened context value parsing to handle edge cases where empty strings or dynamic expressions in context options could cause extraction failures. The parser now gracefully handles various context value types and expressions. [#48](https://github.com/i18next/i18next-cli/pull/48)
+- **Plugin System:** Fixed plugin execution timing by running `onVisitNode` hooks inline during AST traversal instead of after it. This ensures plugins have access to scope information (like `getVarFromScope`) when processing nodes, enabling more sophisticated custom extraction logic. Plugins can now properly access variable scope context during the main AST walking phase. [#47](https://github.com/i18next/i18next-cli/pull/47)
+
+## [1.6.0](https://github.com/i18next/i18next-cli/compare/v1.5.11...v1.6.0) - 2025-10-05
+
+### Added
+- **Plugin System:** Enhanced plugin capabilities with improved context access and error handling. Plugins now receive richer context objects including:
+  - `getVarFromScope(name)`: Access to variable scope information for understanding `useTranslation` hooks, `getFixedT` calls, and namespace context
+  - Full configuration access via `context.config`
+  - Enhanced logging utilities via `context.logger`
+- **Plugin System:** Added robust error handling for plugin hooks. Plugin failures (in `onLoad` and `onVisitNode`) no longer crash the extraction process but are logged as warnings, allowing extraction to continue gracefully
+- **Plugin System:** Improved TypeScript support in plugins with better AST node access, enabling plugins to handle TypeScript-specific syntax like `satisfies` and `as` operators for advanced extraction patterns
+
+### Enhanced
+- **Extractor:** The `processFile` function now provides plugins with comprehensive access to the parsing context, enabling sophisticated custom extraction logic that can leverage variable scope analysis and TypeScript-aware parsing
+- **Extractor (`<Trans>`):** Fixed namespace prefix duplication when both `ns` prop and namespace prefix in `i18nKey` are specified. When a `<Trans>` component has both `ns="form"` and `i18nKey="form:cost_question.description"`, the extractor now correctly removes the redundant namespace prefix and extracts `cost_question.description` to the `form.json` file, matching i18next and i18next-parser behavior. [#45](https://github.com/i18next/i18next-cli/issues/45)
+- **Extractor (Comments):** Fixed namespace scope resolution for `t()` calls in comments. Commented translation calls like `// t("Private")` now correctly inherit the namespace from the surrounding `useTranslation('access')` scope instead of defaulting to the default namespace, matching i18next-parser behavior. This ensures consistency between commented and actual translation calls within the same component scope. [#44](https://github.com/i18next/i18next-cli/issues/44)
+
+## [1.5.11](https://github.com/i18next/i18next-cli/compare/v1.5.10...v1.5.11) - 2025-10-05
+
+- **Extractor:** Fixed handling of empty strings in template literals where conditional expressions could result in empty string concatenation (e.g., `` t(`key${condition ? '.suffix' : ''}`) ``). Empty strings are now properly filtered out during template literal resolution, ensuring only valid key variants are generated. [#41](https://github.com/i18next/i18next-cli/pull/41)
+
+## [1.5.10](https://github.com/i18next/i18next-cli/compare/v1.5.9...v1.5.10) - 2025-10-05
+
+- **Extractor:** Added support for template literals as translation keys in both `t()` functions and `<Trans>` components. The extractor can now resolve complex template strings with nested expressions, ternary operators, and mixed data types to extract all possible key variants (e.g., `` t(`state.${isDone ? 'done' : 'notDone'}.title`) `` generates both `state.done.title` and `state.notDone.title`). [#39](https://github.com/i18next/i18next-cli/pull/39)
+
+## [1.5.9](https://github.com/i18next/i18next-cli/compare/v1.5.8...v1.5.9) - 2025-10-05
+
+### Added
+- **Extractor (`<Trans>`):** Added support for plural-specific default values from `tOptions` prop (e.g., `defaultValue_other: "Items"`). The extractor now correctly uses these values when generating plural keys for Trans components. [#36](https://github.com/i18next/i18next-cli/pull/36)
+- **Extractor:** Added support for dynamic expressions in `t()` function arguments. The extractor can now resolve ternary operators and other static expressions to extract all possible key variants (e.g., `t(isOpen ? 'open' : 'closed')`). [#37](https://github.com/i18next/i18next-cli/pull/37)
+
+### Enhanced
+- **Extractor (`<Trans>`):** Improved namespace resolution consistency by prioritizing namespace from `i18nKey` prop over other sources. When a Trans component uses `i18nKey="ns:key"`, the namespace from the key now takes precedence over the `t` prop namespace, matching i18next's behavior. [#38](https://github.com/i18next/i18next-cli/pull/38)
+
+## [1.5.8](https://github.com/i18next/i18next-cli/compare/v1.5.7...v1.5.8) - 2025-10-05
+
+- **Extractor:** Fixed namespace resolution/override order where explicitly passed `ns` options in `t()` calls were being incorrectly overridden by hook-level namespaces. The extractor now properly prioritizes explicit namespace options over inferred ones. [#32](https://github.com/i18next/i18next-cli/issues/32)
+- **Extractor (`<Trans>`):** Fixed a bug where `context` and `count` props on Trans components were treated as mutually exclusive. The extractor now correctly generates all combinations of context and plural forms (e.g., `key_context_one`, `key_context_other`) to match i18next's behavior. [#33](https://github.com/i18next/i18next-cli/issues/33)
+- **Extractor:** Fixed a bug where passing an empty string as a context value (e.g., `context: test ? 'male' : ''`) resulted in keys with trailing underscores. Empty strings are now treated as "no context" like i18next does, ensuring clean key generation. [#34](https://github.com/i18next/i18next-cli/issues/34)
+
+## [1.5.7](https://github.com/i18next/i18next-cli/compare/v1.5.6...v1.5.7) - 2025-10-04
+
+### Added
+- **Migration:** Added support for custom config file paths in the `migrate-config` command. You can now use a positional argument to specify non-standard config file locations (e.g., `i18next-cli migrate-config my-config.mjs`). [#31](https://github.com/i18next/i18next-cli/issues/31)
+- **Programmatic API:** Exported `runTypesGenerator` function for programmatic usage for build tool integration.
+
+### Enhanced
+- **Migration:** Added warning for deprecated `compatibilityJSON: 'v3'` option in legacy configs.
+
+## [1.5.6](https://github.com/i18next/i18next-cli/compare/v1.5.5...v1.5.6) - 2025-10-03
+
+- **Programmatic API:** Exported `runExtractor`, `runLinter`, `runSyncer`, and `runStatus` functions for programmatic usage. You can now use `i18next-cli` directly in your build scripts, Gulp tasks, or any Node.js application without running the CLI commands. [#30](https://github.com/i18next/i18next-cli/issues/30)
+
+## [1.5.5](https://github.com/i18next/i18next-cli/compare/v1.5.4...v1.5.5) - 2025-10-03
+
+- **Extractor:** Fixed a regression where existing nested translation objects were being replaced with string values when extracted with regular `t()` calls. The extractor now preserves existing nested objects when no explicit default value is provided, ensuring compatibility with global `returnObjects: true` configurations and preventing data loss during extraction. [#29](https://github.com/i18next/i18next-cli/issues/29)
+
+## [1.5.4](https://github.com/i18next/i18next-cli/compare/v1.5.3...v1.5.4) - 2025-10-02
+
+- **Extractor:** Fixed a sorting edge case where keys with identical spellings but different cases (e.g., `FOO` and `foo`) were not consistently ordered. Lowercase variants now correctly appear before uppercase variants when the spelling is identical, ensuring predictable and stable sort order across all translation files.
+
+## [1.5.3](https://github.com/i18next/i18next-cli/compare/v1.5.2...v1.5.3) - 2025-10-02
+
+- **Extractor:** Fixed a regression where key sorting became case-sensitive (e.g., a key like `'Zebra'` would incorrectly appear before `'apple'`). Sorting has been restored to be case-insensitive, ensuring a natural alphabetical order at all levels of the translation files.
+
+## [1.5.2](https://github.com/i18next/i18next-cli/compare/v1.5.1...v1.5.2) - 2025-10-02
+
+- **Extractor:** Fixed a regression where keys within nested objects were no longer being sorted alphabetically (e.g., `buttons.scroll-to-top` would appear before `buttons.cancel`). The sorting logic now recursively sorts keys at all levels of the translation object to ensure a consistent and predictable order.
+
+## [1.5.1](https://github.com/i18next/i18next-cli/compare/v1.5.0...v1.5.1) - 2025-10-02
+
+- **Extractor:** Improved the default key extraction by updating the default `functions` option to `['t', '*.t']`. This allows the extractor to automatically find keys in common patterns like `i18n.t(...)` and `this.t(...)` without any configuration.
+
+## [1.5.0](https://github.com/i18next/i18next-cli/compare/v1.4.0...v1.5.0) - 2025-10-02
+
+### Added
+- **Extractor:** Added wildcard support to the `extract.functions` option. Patterns starting with `*.` (e.g., `'*.t'`) will now match any function call ending with that suffix, making configuration easier for projects with multiple translation function instances.
+
+### Fixed
+- **Extractor:** Fixed a bug that caused incorrect key sorting when a mix of flat and nested keys were present (e.g., `person` and `person-foo`). Sorting is now correctly applied to the top-level keys of the final generated object. [#27](https://github.com/i18next/i18next-cli/issues/27)
+- **Extractor:** Fixed a bug where refactoring a nested key into its parent (e.g., changing `t('person.name')` to `t('person')`) would not correctly remove the old nested object from the translation file. [#28](https://github.com/i18next/i18next-cli/issues/28)
+
+## [1.4.0](https://github.com/i18next/i18next-cli/compare/v1.3.0...v1.4.0) - 2025-10-02
+
+### Added
+- **Plugin System:** Introduced a new `afterSync` plugin hook. This hook runs after the extractor has finished processing and writing files, providing plugins with the final results. This is ideal for post-processing tasks, such as generating a report of newly added keys.
+
+### Fixed
+- **Extractor:** Fixed a bug where translation keys inside class methods were not being extracted, particularly when using member expressions based on `this` (e.g., `this._i18n.t('key')`). [#25](https://github.com/i18next/i18next-cli/issues/25)
+- **Extractor:** Fixed a critical bug where `removeUnusedKeys` would fail to remove keys from a file if it was the last key remaining. The extractor now correctly processes and empties files and namespaces when all keys have been removed from the source code. [#26](https://github.com/i18next/i18next-cli/issues/26)
+
+## [1.3.0](https://github.com/i18next/i18next-cli/compare/v1.2.1...v1.3.0) - 2025-10-02
+
+### Added
+- **Linter:** Introduced a new `--watch` flag for the `lint` command, enabling it to run automatically on file changes for real-time feedback during development.
+- **Extractor:** Introduced a new `--dry-run` flag for the `extract` command. When used, the extractor will report potential changes but will not write any files to disk, which is useful for validation in CI/CD pipelines. [#22](https://github.com/i18next/i18next-cli/issues/22)
+
+### Fixed
+- **Extractor:** Reduced console noise in `extract --watch` mode. The promotional tip is now only displayed once per watch session, instead of after every file change. [#20](https://github.com/i18next/i18next-cli/issues/20)
+
+## [1.2.1](https://github.com/i18next/i18next-cli/compare/v1.2.0...v1.2.1) - 2025-10-02
+
+- **Extractor:** Fixed a bug where translation keys inside class methods were not being extracted. This was caused by a fragile AST traversal logic that has now been made more robust. [19](https://github.com/i18next/i18next-cli/issues/19)
+
+## [1.2.0](https://github.com/i18next/i18next-cli/compare/v1.1.0...v1.2.0) - 2025-10-02
+
+### Added
+
+  - **Extractor:** The `extract.sort` option now accepts a custom comparator function, allowing for advanced key sorting logic beyond simple alphabetical order. [#16](https://github.com/i18next/i18next-cli/pull/16)
+
+### Changed
+
+  - **File Output:** All generated translation files (`.json`, `.js`, `.ts`) now end with a trailing newline to improve compatibility with POSIX standards and various linters. [#17](https://github.com/i18next/i18next-cli/pull/17)
+  - **Extractor:** The `extract.indentation` option now accepts a string (e.g., `'\t'`) in addition to a number, allowing for the use of tab characters for indentation in the output files. [#15](https://github.com/i18next/i18next-cli/pull/15)
+
+## [1.1.0](https://github.com/i18next/i18next-cli/compare/v1.0.2...v1.1.0) - 2025-10-02
+
+- **Extractor:** Added a new `extract.removeUnusedKeys` option to control whether keys no longer found in the source code are removed from translation files. This defaults to `true` to maintain the existing pruning behavior. Set it to `false` to preserve all existing keys, which is useful for projects with dynamic keys. [#18](https://github.com/i18next/i18next-cli/issues/18)
+
+## [1.0.2](https://github.com/i18next/i18next-cli/compare/v1.0.1...v1.0.2) - 2025-10-01
+
+- **Extractor & Linter:** Added a new `extract.ignore` option to provide a simpler and more reliable way to exclude files from processing. This option accepts an array of glob patterns and is respected by both the `extract` and `lint` commands, avoiding the need for complex negative glob patterns.
+
+## [1.0.1](https://github.com/i18next/i18next-cli/compare/v1.0.0...v1.0.1) - 2025-10-01
+
+- **Extractor:** Fixed a bug where the comment parser was too aggressive, causing it to incorrectly extract keys from non-translation functions (like `test()` or `http.get()`) found inside comments. The parser is now more specific and safely targets only valid, commented-out `t()` calls. [#13](https://github.com/i18next/i18next-cli/issues/13)
+
+## [1.0.0](https://github.com/i18next/i18next-cli/compare/v0.9.20...v1.0.0) - 2025-10-01
+
+🎉 **Official v1.0.0 Release!**
+
+This release marks the official v1.0.0 milestone for `i18next-cli`, signifying that the tool is stable, feature-complete, and ready for production use - any future breaking changes will require a major version bump per SemVer.
+
+After extensive development and numerous bug fixes across the v0.9.x series, the core feature set is now considered robust and reliable. Thank you to everyone who contributed by reporting issues and providing valuable feedback!
+
+## [0.9.20](https://github.com/i18next/i18next-cli/compare/v0.9.19...v0.9.20) - 2025-09-30
+
+- **Extractor (`<Trans>`):** Added support for the `tOptions` prop on the `<Trans>` component. The extractor can now read plural-specific default values (e.g., `defaultValue_other`), namespaces (`ns`), and `context` from this prop, providing parity with the `t()` function's advanced options.
+
+## [0.9.19](https://github.com/i18next/i18next-cli/compare/v0.9.18...v0.9.19) - 2025-09-30
+
+- **Status Command:** Greatly improved the accuracy of the translation status report for plural keys. The command now calculates the total number of required keys for each language based on that specific language's pluralization rules (e.g., 2 forms for English, 6 for Arabic), rather than incorrectly using the primary language's rules for all locales.
+- **Extractor:** Corrected the logic for ordinal plurals and default value fallbacks. The extractor now recognizes keys with an `_ordinal` suffix as ordinal plurals. The fallback hierarchy for all plural default values (e.g., `defaultValue_one`, `defaultValue_other`) now correctly matches i18next's behavior.
+
+## [0.9.18](https://github.com/i18next/i18next-cli/compare/v0.9.17...v0.9.18) - 2025-09-30
+
+- **Extractor:** Fixed a bug where translation keys were not found in custom functions that were part of an object (e.g., `i18n.t(...)`). The `functions` configuration option now correctly handles member expressions in addition to simple function names. [#10](https://github.com/i18next/i18next-cli/issues/10)
+- **Extractor:** Fixed a critical bug where the `extract` command would incorrectly overwrite existing translations in secondary languages when using the `mergeNamespaces: true` option. The fix also resolves a related issue where unused keys were not being correctly pruned from the primary language file in the same scenario. The translation manager logic is now more robust for both merged and non-merged configurations. [#11](https://github.com/i18next/i18next-cli/issues/11)
+
+## [0.9.17](https://github.com/i18next/i18next-cli/compare/v0.9.16...v0.9.17) - 2025-09-29
+
+- **Extractor:** Fixed a bug where namespace and `keyPrefix` information from custom `useTranslationNames` hooks was ignored when the `t` function was assigned directly to a variable (e.g., `let t = myHook()`). The extractor now correctly handles this pattern in addition to destructuring assignments. [#9](https://github.com/i18next/i18next-cli/issues/9)
+
+## [0.9.16](https://github.com/i18next/i18next-cli/compare/v0.9.15...v0.9.16) - 2025-09-29
+
+### Changed
+- **Extractor:** Enhanced the `useTranslationNames` option to support custom hook-like functions with configurable argument positions for namespaces and `keyPrefix`. The extractor can now also correctly identify these functions when they are asynchronous (i.e., used with `await`).
+
+### Fixed
+- **Extractor:** Fixed a critical crash that occurred when extracting 'mixed keys' (e.g., both a `parent` key and a `parent.child` key exist). The extractor now handles this conflict by preserving the parent key and adding the child key as a flat, top-level key to prevent data loss.
+
+## [0.9.15](https://github.com/i18next/i18next-cli/compare/v0.9.14...v0.9.15) - 2025-09-28
+
+- **Config Loader:** Fixed a tricky crash that occurred when loading an `i18next.config.ts` file with dependencies that use certain module patterns (e.g., `zod`). This was resolved by disabling `jiti`'s CJS/ESM interoperability layer to ensure modules are imported reliably. [#8](https://github.com/i18next/i18next-cli/issues/8)
+
+## [0.9.14](https://github.com/i18next/i18next-cli/compare/v0.9.13...v0.9.14) - 2025-09-28
+
+- **Config Loader:** Added support for TypeScript path aliases in the `i18next.config.ts` file. The tool now automatically finds and parses your project's `tsconfig.json` (searching upwards from the current directory), allowing you to use aliases like `@/...` to import shared settings or constants into your configuration. [#7](https://github.com/i18next/i18next-cli/issues/7)
+
+## [0.9.13](https://github.com/i18next/i18next-cli/compare/v0.9.12...v0.9.13) - 2025-09-27
+
+- **Linter & Extractor:** Fixed a parser crash that occurred when analyzing TypeScript files containing decorator syntax. Both the `lint` and `extract` commands will now correctly process files that use decorators. [#6](https://github.com/i18next/i18next-cli/issues/6)
+
+## [0.9.12](https://github.com/i18next/i18next-cli/compare/v0.9.11...v0.9.12) - 2025-09-27
+
+### Added
+- **CLI:** The `init` command is now smarter. It uses a heuristic scan of the project to suggest tailored defaults for locales and file paths in the interactive setup wizard.
+
+### Fixed
+- **CLI:** Fixed a critical bug where the `types` command would hang without exiting after generating files if they already existed. [#5](https://github.com/i18next/i18next-cli/issues/5)
+- **Types Generator:** Corrected an issue where default configuration values were not being applied, causing the `types` command to fail if the `types` property was not explicitly defined in the config file.
+
+## [0.9.11](https://github.com/i18next/i18next-cli/compare/v0.9.10...v0.9.11) - 2025-09-26
+
+### Added
+- **Extractor:** Added support for plural-specific default values (e.g., `defaultValue_other`, `defaultValue_two`) in `t()` function options. [#3](https://github.com/i18next/i18next-cli/issues/3)
+- **Extractor:** Added support for ordinal plurals (e.g., `t('key', { count: 1, ordinal: true })`), generating the correct suffixed keys (`key_ordinal_one`, `key_ordinal_two`, etc.) for all languages.
+
+### Fixed
+- **Extractor:** Fixed an issue where the AST walker would not find `t()` calls inside nested functions, such as an `array.map()` callback, within JSX. [#4](https://github.com/i18next/i18next-cli/issues/4)
+
+## [0.9.10] - 2025-09-25(https://github.com/i18next/i18next-cli/compare/v0.9.9...v0.9.10)
+
+### Added
+- **JavaScript/TypeScript Translation Files:** Added the `outputFormat` option to support generating translation files as `.json` (default), `.js` (ESM or CJS), or `.ts` modules.
+- **Merged Namespace Files:** Added the `mergeNamespaces` option to combine all namespaces into a single file per language, streamlining imports and file structures.
+
+## [0.9.9] - 2025-09-25(https://github.com/i18next/i18next-cli/compare/v0.9.8...v0.9.9)
+
+- **Extractor:** Now supports static and dynamic (ternary) `context` options in both `t()` and `<Trans>`.
+
+## [0.9.8](https://github.com/i18next/i18next-cli/compare/v0.9.7...v0.9.8) - 2025-09-25
+
+- support t returnObjects
+
+## [0.9.7](https://github.com/i18next/i18next-cli/compare/v0.9.6...v0.9.7) - 2025-09-25
+
+- support t key fallbacks
+
+## [0.9.6](https://github.com/i18next/i18next-cli/compare/v0.9.5...v0.9.6) - 2025-09-25
+
+- show amount of namespaces in status output
+
+## [0.9.5](https://github.com/i18next/i18next-cli/compare/v0.9.4...v0.9.5) - 2025-09-25
+
+- introduced ignoredTags option
+
+## [0.9.4](https://github.com/i18next/i18next-cli/compare/v0.9.3...v0.9.4) - 2025-09-25
+
+### Added
+- **Status Command:** Added a `--namespace` option to filter the status report by a single namespace.
+
+### Fixed
+- **Linter:** Corrected a persistent bug causing inaccurate line number reporting for found issues.
+- **Linter:** Significantly improved accuracy by adding heuristics to ignore URLs, paths, symbols, and common non-translatable JSX attributes (like `className`, `type`, etc.).
+
+## [0.9.3](https://github.com/i18next/i18next-cli/compare/v0.9.2...v0.9.3) - 2025-09-25
+
+- improved heuristic-config
+
+## [0.9.2](https://github.com/i18next/i18next-cli/compare/v0.9.1...v0.9.2) - 2025-09-25
+
+- added new paths for heuristic-config
+- fix some other dependencies
+
+## [0.9.1](https://github.com/i18next/i18next-cli/compare/v0.9.0...v0.9.1) - 2025-09-25
+
+- move glob from devDependency to dependency
+
+## [0.9.0] - 2025-09-25
+
+### Added
+
+This is the initial public release of `i18next-cli`, a complete, high-performance replacement for `i18next-parser` and `i18next-scanner`.
+
+#### Core Engine & Extractor
+-   Initial high-performance, SWC-based parsing engine for JavaScript and TypeScript.
+-   Advanced, scope-aware AST analysis for intelligent key extraction.
+-   Support for `t()` functions, `<Trans>` components, `useTranslation` hooks (including `keyPrefix` and aliasing), and `getFixedT`.
+-   Handles complex i18next features: namespaces (via ns-separator, options, and hooks), plurals, and context.
+-   Support for the type-safe selector API (`t($=>$.key.path)`).
+-   Extraction from commented-out code to support documentation-driven keys.
+
+#### Commands
+-   **`init`**: Interactive wizard to create a new configuration file (`i18next.config.ts` or `.js`).
+-   **`extract`**: Extracts keys and updates translation files, with `--watch` and `--ci` modes.
+-   **`types`**: Generates TypeScript definitions for type-safe i18next usage and autocompletion.
+-   **`sync`**: Synchronizes secondary language files with a primary language file, adding missing keys and removing unused ones.
+-   **`lint`**: Lints the codebase for potential issues like hardcoded strings.
+-   **`status`**: Displays a project health dashboard with a summary view and a detailed, key-by-key view (`status [locale]`).
+-   **`migrate-config`**: Provides an automatic migration path from a legacy `i18next-parser.config.js`.
+-   **`locize-*`**: Full suite of commands (`sync`, `download`, `migrate`) for seamless integration with the locize TMS, including an interactive setup for credentials.
+
+#### Configuration & DX
+-   **Zero-Config Mode**: `status` and `lint` commands work out-of-the-box on most projects by heuristically detecting the project structure.
+-   **Typed Configuration**: Fully-typed config file (`i18next.config.ts`) with a `defineConfig` helper.
+-   **Robust TS Support**: On-the-fly TypeScript config file loading (`.ts`) is supported in consumer projects via `jiti`.
+-   **Dynamic Key Support**: `preservePatterns` option to support dynamic keys.
+-   **Configurable Linter**: The linter can be customized with an `ignoredAttributes` option.
+-   **Polished UX**: Consistent `ora` spinners provide clear feedback on all asynchronous commands.
+-   **Dual CJS/ESM Support**: Modern package structure for broad compatibility.
+
+#### Plugin System
+-   Initial plugin architecture with `setup`, `onLoad`, `onVisitNode`, and `onEnd` hooks, allowing for custom extraction logic and support for other file types (e.g., HTML, Handlebars).

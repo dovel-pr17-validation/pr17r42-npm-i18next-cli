@@ -1,0 +1,178 @@
+import { glob } from 'glob'
+import type { Expression } from '@swc/core'
+import type { ExtractedKey, Logger, I18nextToolkitConfig, ASTVisitorHooks } from '../../types.js'
+import { processFile, preScanFile } from './extractor.js'
+import { ConsoleLogger } from '../../utils/logger.js'
+import { initializePlugins, createPluginContext, ConflictError } from '../plugin-manager.js'
+import { ASTVisitors } from './ast-visitors.js'
+import { ExpressionResolver } from '../parsers/expression-resolver.js'
+import { getTsConfigAliases } from '../../config.js'
+
+/**
+ * Main function for finding translation keys across all source files in a project.
+ *
+ * This function orchestrates the key extraction process:
+ * 1. Processes source files based on input patterns
+ * 2. Initializes and manages plugins
+ * 3. Processes each file through AST parsing and key extraction
+ * 4. Runs plugin lifecycle hooks
+ * 5. Returns a deduplicated map of all found keys
+ *
+ * @param config - The i18next toolkit configuration object
+ * @param logger - Logger instance for output (defaults to ConsoleLogger)
+ * @returns Promise resolving to a Map of unique translation keys with metadata
+ *
+ * @example
+ * ```typescript
+ * const config = {
+ *   extract: {
+ *     input: ['src/**\/*.{ts,tsx}'],
+ *     functions: ['t', '*.t'],
+ *     transComponents: ['Trans']
+ *   }
+ * }
+ *
+ * const keys = await findKeys(config)
+ * console.log(`Found ${keys.size} unique translation keys`)
+ * ```
+ */
+export async function findKeys (
+  config: I18nextToolkitConfig,
+  logger: Logger = new ConsoleLogger(),
+  fileErrors?: string[]
+): Promise<{ allKeys: Map<string, ExtractedKey>, objectKeys: Set<string>, keepPatterns: ExtractedKey[] }> {
+  const { plugins: pluginsOrUndefined, ...otherConfig } = config
+  const plugins = pluginsOrUndefined || []
+
+  const sourceFiles = await processSourceFiles(config)
+  const allKeys = new Map<string, ExtractedKey>()
+
+  // 1. Create the base context with config and logger.
+  const pluginContext = createPluginContext(allKeys, plugins, otherConfig, logger)
+
+  // 2. Create hooks for plugins to hook into AST
+  const hooks = {
+    onBeforeVisitNode: (node) => {
+      for (const plugin of plugins) {
+        try {
+          plugin.onVisitNode?.(node, pluginContext)
+        } catch (err) {
+          logger.warn(`Plugin ${plugin.name} onVisitNode failed:`, err)
+        }
+      }
+    },
+    resolvePossibleKeyStringValues: (expression: Expression) => {
+      return plugins.flatMap(plugin => {
+        try {
+          return plugin.extractKeysFromExpression?.(expression, config, logger) ?? []
+        } catch (err) {
+          logger.warn(`Plugin ${plugin.name} extractKeysFromExpression failed:`, err)
+          return []
+        }
+      })
+    },
+    resolvePossibleContextStringValues: (expression: Expression) => {
+      return plugins.flatMap(plugin => {
+        try {
+          return plugin.extractContextFromExpression?.(expression, config, logger) ?? []
+        } catch (err) {
+          logger.warn(`Plugin ${plugin.name} extractContextFromExpression failed:`, err)
+          return []
+        }
+      })
+    },
+  } satisfies ASTVisitorHooks
+
+  // 3. Create the visitor instance, passing it the context.
+  // Use a shared ExpressionResolver so captured enums/objects in one file are available when resolving MemberExpressions
+  const sharedExpressionResolver = new ExpressionResolver(hooks)
+  sharedExpressionResolver.maxMemberDepth = config.extract.maxTypeDepth ?? 5
+  sharedExpressionResolver.pathAliases = await getTsConfigAliases()
+  sharedExpressionResolver.warnOnAmbiguous = !!config.extract.warnOnAmbiguousTypes
+  const astVisitors = new ASTVisitors(otherConfig, pluginContext, logger, hooks, sharedExpressionResolver)
+
+  // 4. "Wire up" the visitor's scope method to the context.
+  // This avoids a circular dependency while giving plugins access to the scope.
+  pluginContext.getVarFromScope = astVisitors.getVarFromScope.bind(astVisitors)
+
+  // 5. Initialize plugins
+  await initializePlugins(plugins)
+
+  // 6. Pre-scan all files to populate cross-file shared constant tables BEFORE any
+  //    key extraction begins. This ensures that identifier-based namespace references
+  //    such as `useTranslation(NS_CALENDAR)` or `t('key', { ns: NS_SETTINGS })` resolve
+  //    correctly even when the defining constants file is processed after the file that
+  //    uses the identifier.
+  for (const file of sourceFiles) {
+    await preScanFile(file, astVisitors, otherConfig, logger, fileErrors)
+  }
+
+  // 6b. Re-resolve declarations that refer to ones in files scanned after them, and
+  //     mirror declarations onto the local names they were imported as, so that
+  //     `import { ResourceStatus as Status }` resolves like the unaliased import.
+  sharedExpressionResolver.finishPreScan()
+
+  // 7. Extraction pass: all shared tables are now fully populated, so every
+  //    identifier reference can be resolved regardless of file order.
+  for (const file of sourceFiles) {
+    await processFile(file, plugins, astVisitors, pluginContext, otherConfig, logger, fileErrors)
+  }
+
+  // 7a. Names the extraction pass had to guess between same-named declarations of different files
+  const { ambiguities } = sharedExpressionResolver
+  if (ambiguities.length > 0 && config.extract.warnOnAmbiguousTypes === 'error') throw new ConflictError(ambiguities.join('\n'))
+  for (const msg of ambiguities) logger.warn(msg)
+
+  // 7. Run onEnd hooks
+  for (const plugin of plugins) {
+    await plugin.onEnd?.(allKeys)
+  }
+
+  // Normalization: mark already-expanded plural keys
+  const pluralSeparator = otherConfig.extract?.pluralSeparator ?? '_'
+  const categories = ['zero', 'one', 'two', 'few', 'many', 'other']
+  for (const ek of allKeys.values()) {
+    const parts = String(ek.key).split(pluralSeparator)
+    const last = parts[parts.length - 1]
+    const isOrdinal = parts.length >= 3 && parts[parts.length - 2] === 'ordinal'
+    if (categories.includes(last) || (isOrdinal && categories.includes(last))) {
+      ;(ek as any).isExpandedPlural = true
+    }
+  }
+  return { allKeys, objectKeys: astVisitors.objectKeys, keepPatterns: astVisitors.keepPatterns }
+}
+
+/**
+ * Processes source files using glob patterns from configuration.
+ * Excludes node_modules by default and resolves relative to current working directory.
+ *
+ * @param config - The i18next toolkit configuration object
+ * @returns Promise resolving to array of file paths to process
+ *
+ * @internal
+ */
+async function processSourceFiles (config: I18nextToolkitConfig): Promise<string[]> {
+  // `node_modules` is ignored by default, but a user who explicitly globs into it
+  // means it, either to extract from a package that ships translatable sources
+  // (#213) or to let the type-aware resolver read a dependency's `.d.ts` (#294).
+  const inputPatterns = Array.isArray(config.extract.input) ? config.extract.input : [config.extract.input]
+  const defaultIgnore = inputPatterns.some(p => typeof p === 'string' && p.includes('node_modules'))
+    ? []
+    : ['node_modules/**']
+
+  // Normalize the user's ignore option into an array
+  const userIgnore = Array.isArray(config.extract.ignore)
+    ? config.extract.ignore
+    : config.extract.ignore ? [config.extract.ignore] : []
+
+  const files = await glob(config.extract.input, {
+    // Combine default ignore patterns with user-configured ones
+    ignore: [...defaultIgnore, ...userIgnore],
+    cwd: process.cwd(),
+    // A directory named e.g. `abc.tsx` matches the input globs
+    nodir: true,
+  })
+  // glob's order is not stable across runs, and when two call sites give one key
+  // different defaults the file visited first wins, so sort for reproducible output (#296)
+  return files.sort()
+}

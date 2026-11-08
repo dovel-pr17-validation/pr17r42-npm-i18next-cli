@@ -1,0 +1,10 @@
+# Ignore all files and directories
+**/*
+
+# Except these:
+!dist/**/*
+!types/**/*
+!LICENSE
+!package.json
+!README.md
+!tsconfig.json
